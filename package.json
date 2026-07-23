@@ -1,0 +1,13 @@
+{
+  "name": "silverfish",
+  "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "npm --workspace apps/desktop run dev",
+    "build": "npm --workspace apps/desktop run build",
+    "typecheck": "npm --workspace apps/desktop run typecheck",
+    "tauri": "npm --workspace apps/desktop run tauri",
+    "smoke:relay": "node scripts/relay-smoke.mjs",
+    "smoke:codex": "node scripts/codex-app-server-smoke.mjs"
+  }
+}
