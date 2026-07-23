@@ -66,6 +66,9 @@ const emptySnapshot: RoomSnapshot = {
 const configuredRelayUrl = (
   import.meta.env.VITE_SILVERFISH_RELAY_URL ?? import.meta.env.VITE_CO_DEX_RELAY_URL
 )?.trim();
+const configuredPublicUrl = import.meta.env.VITE_SILVERFISH_PUBLIC_URL?.trim();
+const subscribeHref = import.meta.env.VITE_SILVERFISH_SUBSCRIBE_URL?.trim();
+const isManagedService = import.meta.env.VITE_SILVERFISH_MANAGED_SERVICE === "true";
 const defaultRelayUrl = configuredRelayUrl || "http://127.0.0.1:8787";
 
 interface RoomActions {
@@ -178,7 +181,7 @@ function HostApp() {
     setCreatingInvite(true);
     try {
       const invite = await createRelayInvite(relayUrl, roomSecrets.roomId, roomSecrets.hostToken);
-      const base = `${normalizeRelayUrl(relayUrl)}/join`;
+      const base = `${normalizeRelayUrl(configuredPublicUrl || relayUrl)}/join`;
       const fragment = new URLSearchParams({
         room: roomSecrets.roomId,
         invite: invite.inviteId,
@@ -229,7 +232,10 @@ function HostApp() {
         actions={actions}
         isHost
         projectName={workspaceName(cwd)}
-        connectionLabel={hostConnectionLabel(roomSecrets?.limits)}
+        connectionLabel="Host · encrypted"
+        roomLimits={roomSecrets?.limits}
+        managedService={isManagedService}
+        subscribeHref={subscribeHref}
         inviteToast={inviteToast}
         creatingInvite={creatingInvite}
         onCreateInvite={createInvite}
@@ -282,6 +288,7 @@ function HostApp() {
               <input value={relayUrl} onChange={(event) => setRelayUrl(event.target.value)} placeholder="https://relay.example.com" />
             </label>
           ) : null}
+          {isManagedService ? <HostedPlanCard subscribeUrl={subscribeHref} /> : null}
           <div
             className="button-tooltip"
             data-tooltip={connectBlocker || undefined}
@@ -368,6 +375,26 @@ function StatusGrid({ status, installing, onInstall }: {
           </code>
         </button>
       ))}
+    </div>
+  );
+}
+
+function HostedPlanCard({ subscribeUrl }: { subscribeUrl?: string }) {
+  return (
+    <div className="hosted-plan-card">
+      <div>
+        <span>HOSTED FREE</span>
+        <strong>1 guest · 60-minute rooms</strong>
+        <p>No account or card required. Self-hosted relays are always separate and use their own limits.</p>
+      </div>
+      {subscribeUrl ? (
+        <a href={subscribeUrl} target="_blank" rel="noreferrer">
+          Founding Host · $15/month
+          <ChevronRight size={15} />
+        </a>
+      ) : (
+        <span className="hosted-plan-pending">Founding Host · $15/month · checkout opening soon</span>
+      )}
     </div>
   );
 }
@@ -481,7 +508,7 @@ async function handleGuestRelay(
   } else if (relay.type === "hostAvailable") {
     setError("");
   } else if (relay.type === "error") {
-    setError(relay.message);
+    setError(isManagedService ? friendlyRelayError(relay.code, relay.message) : relay.message);
   } else if (relay.type === "payload") {
     try {
       const envelope = JSON.parse(relay.payload) as CipherEnvelope;
@@ -513,12 +540,15 @@ function applyHostEvent(current: RoomSnapshot, event: HostEvent, sequence: numbe
   return current;
 }
 
-function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, error }: {
+function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, error }: {
   snapshot: RoomSnapshot;
   actions: RoomActions;
   isHost: boolean;
   projectName?: string;
   connectionLabel: string;
+  roomLimits?: RelayRoomLimits;
+  managedService?: boolean;
+  subscribeHref?: string;
   inviteToast?: string;
   creatingInvite?: boolean;
   onCreateInvite?: () => Promise<void>;
@@ -528,8 +558,10 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, in
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"prompt" | "steer">("prompt");
+  const [now, setNow] = useState(Date.now());
   const endRef = useRef<HTMLDivElement>(null);
   const displayProjectName = projectName || snapshot.projectName || "Project";
+  const roomConnectionLabel = roomLimits ? hostConnectionLabel(roomLimits, now) : connectionLabel;
   const stickyAgentMessageIndex = snapshot.timeline.reduce(
     (lastIndex, item, index) => item.kind === "agentMessage" && item.completed ? index : lastIndex,
     -1,
@@ -537,6 +569,11 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, in
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [snapshot.timeline.length]);
+  useEffect(() => {
+    if (!roomLimits?.expiresAtMs) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(interval);
+  }, [roomLimits?.expiresAtMs]);
 
   async function submit() {
     const value = text.trim();
@@ -550,7 +587,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, in
     <main className="room-shell">
       <header className="room-header">
         <div className="room-brand"><div className="brand-mark small"><SilverfishMark size={21} /></div><strong>Silverfish</strong><span>/</span><span className="project-name" title={displayProjectName}>{displayProjectName}</span></div>
-        <div className="room-status"><span className="live-dot" /> LIVE <span className="room-divider" /> {connectionLabel}</div>
+        <div className="room-status"><span className="live-dot" /> LIVE <span className="room-divider" /> {roomConnectionLabel}</div>
         <div className="header-actions">
           {isHost ? <button className="invite-link" onClick={() => void onCreateInvite?.()} disabled={creatingInvite} aria-label="Copy invite link">Invite <Link2 size={15} /></button> : null}
           {isHost && <button className="secondary end-room" onClick={onCloseRoom}>End room</button>}
@@ -559,6 +596,12 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, in
       </header>
       {inviteToast ? <div className="invite-toast" role="status"><Check size={16} /><span>{inviteToast}</span></div> : null}
       <div className="room-banners">
+        {isHost && managedService && roomLimits ? (
+          <div className="hosted-room-banner">
+            <span><strong>Hosted free room</strong> · {roomLimitSummary(roomLimits, now)}</span>
+            {subscribeHref ? <a href={subscribeHref} target="_blank" rel="noreferrer">Upgrade</a> : null}
+          </div>
+        ) : null}
         {error && <div className="room-error">{error}</div>}
       </div>
       <div className="room-grid">
@@ -626,12 +669,24 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function hostConnectionLabel(limits?: RelayRoomLimits): string {
-  if (!limits) return "Host · encrypted";
+function hostConnectionLabel(limits: RelayRoomLimits, now: number): string {
   const guestLabel = `${limits.maxGuests} guest${limits.maxGuests === 1 ? "" : "s"}`;
   if (!limits.expiresAtMs) return `Host · ${guestLabel}`;
-  const minutes = Math.max(1, Math.round((limits.expiresAtMs - Date.now()) / 60_000));
+  const minutes = Math.max(0, Math.ceil((limits.expiresAtMs - now) / 60_000));
   return `Host · ${guestLabel} · ${minutes} min`;
+}
+
+function roomLimitSummary(limits: RelayRoomLimits, now: number): string {
+  const guestLabel = `${limits.maxGuests} guest${limits.maxGuests === 1 ? "" : "s"} max`;
+  if (!limits.expiresAtMs) return guestLabel;
+  const minutes = Math.max(0, Math.ceil((limits.expiresAtMs - now) / 60_000));
+  return `${guestLabel} · ${minutes} min remaining`;
+}
+
+function friendlyRelayError(code: string, fallback: string): string {
+  if (code === "room_full") return "This hosted free room already has its one guest.";
+  if (code === "room_expired") return "This hosted free room reached its 60-minute limit. Ask the host to start a new room.";
+  return fallback;
 }
 
 function SidebarSection({ icon, title, count, action, children }: { icon: React.ReactNode; title: string; count: number; action?: React.ReactNode; children: React.ReactNode }) {

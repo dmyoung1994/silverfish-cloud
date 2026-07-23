@@ -3,6 +3,7 @@ set -euo pipefail
 
 image="us-west1-docker.pkg.dev/gen-lang-client-0308672059/co-dex/relay:latest"
 registry="us-west1-docker.pkg.dev"
+relay_hostname="2600-1900-4041-40e-0-1-0-0.sslip.io"
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install --yes \
@@ -53,13 +54,18 @@ if [[ -z "$relay_ip" ]]; then
   exit 1
 fi
 
-certificate_dir="/etc/letsencrypt/live/${relay_ip}"
+resolved_relay_ip="$(getent ahostsv6 "$relay_hostname" | awk 'NR == 1 {print $1}')"
+if [[ "$resolved_relay_ip" != "$relay_ip" ]]; then
+  echo "${relay_hostname} resolved to ${resolved_relay_ip:-nothing}, expected ${relay_ip}" >&2
+  exit 1
+fi
+
+certificate_dir="/etc/letsencrypt/live/${relay_hostname}"
 if [[ ! -s "${certificate_dir}/fullchain.pem" || ! -s "${certificate_dir}/privkey.pem" ]]; then
   systemctl stop nginx
   /opt/certbot/bin/certbot certonly \
     --standalone \
-    --preferred-profile shortlived \
-    --ip-address "$relay_ip" \
+    --domain "$relay_hostname" \
     --non-interactive \
     --agree-tos \
     --register-unsafely-without-email
@@ -74,11 +80,13 @@ map \$http_upgrade \$connection_upgrade {
 
 server {
     listen [::]:80;
-    return 308 https://[${relay_ip}]\$request_uri;
+    server_name ${relay_hostname};
+    return 308 https://${relay_hostname}\$request_uri;
 }
 
 server {
     listen [::]:443 ssl;
+    server_name ${relay_hostname};
     ssl_certificate ${certificate_dir}/fullchain.pem;
     ssl_certificate_key ${certificate_dir}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -103,7 +111,7 @@ systemctl reload nginx
 
 cat > /etc/systemd/system/co-dex-cert-renew.service <<'SERVICE'
 [Unit]
-Description=Renew the co-dex IPv6 TLS certificate
+Description=Renew the Silverfish relay TLS certificate
 After=network-online.target
 Wants=network-online.target
 

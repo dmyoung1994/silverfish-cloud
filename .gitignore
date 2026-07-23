@@ -6,6 +6,7 @@
 /apps/desktop/src-tauri/gen
 **/node_modules
 **/target
+**/.wrangler
 .DS_Store
 *.log
 .env

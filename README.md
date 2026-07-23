@@ -50,18 +50,25 @@ CO_DEX_WEB_DIR=apps/desktop/dist cargo run -p co-dex-relay
 To bake a deployed relay into the desktop app, set `VITE_SILVERFISH_RELAY_URL` in the repository-root `.env` before starting or building it:
 
 ```sh
-VITE_SILVERFISH_RELAY_URL=https://[2600:1900:4041:40e:0:1::]
+VITE_SILVERFISH_RELAY_URL=https://relay.example.com
 ```
 
 When set, this relay is used automatically and the relay URL field is hidden from the host setup screen. Leave it unset to keep the editable localhost default.
 
-The public landing page can link to a hosted Founding Host subscription checkout without putting payment credentials in the application. Create a $15/month recurring product in Stripe Managed Payments, create its hosted checkout link, then set the public checkout URL:
+If browser invites are hosted separately from the relay, set the public site used to build invite URLs:
 
 ```sh
+VITE_SILVERFISH_PUBLIC_URL=https://silverfish.example.com
+```
+
+The official managed-service build can link to a Founding Host subscription without putting payment credentials in the application. Create a $15/month recurring Price in Stripe Billing, use Stripe-hosted Checkout or a Payment Link, and set:
+
+```sh
+VITE_SILVERFISH_MANAGED_SERVICE=true
 VITE_SILVERFISH_SUBSCRIBE_URL=https://buy.stripe.com/your-payment-link
 ```
 
-If this variable is unset, the pricing section remains visible but clearly marks checkout as not yet open. Payment, renewal, cancellation, receipts, and merchant-of-record tax handling stay on Stripe-hosted pages.
+`VITE_SILVERFISH_MANAGED_SERVICE` is false by default. Open-source and self-hosted builds therefore contain no subscription UI or license checks. If the official build has no checkout URL yet, it marks checkout as not yet open. Checkout, renewal, cancellation, receipts, and tax collection stay on Stripe-hosted pages; paid entitlements must be enforced by the managed service, never by the open-source client.
 
 For internet use, terminate TLS in front of the relay. Plain `ws://` is intended only for localhost development.
 
@@ -79,15 +86,15 @@ Room capacity and hard lifetime are deployment settings, not application license
 
 Production deployments should add a TLS reverse proxy, request-level rate limiting at the edge, and an origin allowlist appropriate to their domain. Health checks are available at `/healthz`.
 
-### Current GCP test relay
+### Current managed test deployment
 
-The friends-and-family relay is deployed to an IPv6-only Free Tier `e2-micro` in `us-west1-b`:
+The public site, DMG, and public relay endpoint are served from a Cloudflare Worker:
 
 ```text
-https://[2600:1900:4041:40e:0:1::]
+https://try.silverfish-app.workers.dev
 ```
 
-It runs in project `gen-lang-client-0308672059` as instance `co-dex-relay` (the infrastructure keeps its original internal name). Nginx terminates a trusted Let's Encrypt IP-address certificate, HTTP redirects to HTTPS, and a systemd timer checks for certificate renewal twice daily. Only inbound IPv6 ports 80 and 443 are open; the relay process on port 8787 is not publicly reachable.
+The Worker serves the static application and proxies only `/healthz` and `/api/rooms*` to the IPv6-only Free Tier `e2-micro` origin. Collaborators therefore use a normal dual-stack `workers.dev` hostname and do not need IPv6. The Cloudflare Workers Free plan has a hard daily request cap instead of usage overage billing. Room state remains on the e2 instance and is held only in memory.
 
 Build and publish an updated image:
 
@@ -98,7 +105,7 @@ gcloud builds submit . \
   --project=gen-lang-client-0308672059
 ```
 
-Apply startup-script changes and restart the empty relay:
+Apply relay startup-script changes and restart the empty relay:
 
 ```sh
 gcloud compute instances add-metadata co-dex-relay \
@@ -111,7 +118,14 @@ gcloud compute instances reset co-dex-relay \
   --project=gen-lang-client-0308672059
 ```
 
-The address is IPv6-only. Each collaborator must have working IPv6 connectivity. Keep usage within Google Cloud's current Free Tier limits, particularly outbound transfer and Artifact Registry storage.
+Build and deploy the public site and download:
+
+```sh
+npm run build
+npx wrangler deploy --config workers/relay-proxy/wrangler.jsonc
+```
+
+The Worker is a narrow availability bridge, not a trust boundary: end-to-end room encryption remains unchanged and the Worker cannot decrypt payloads. Keep the e2 VM and Artifact Registry within Google Cloud's Free Tier limits.
 
 ## Security model
 

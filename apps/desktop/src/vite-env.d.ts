@@ -3,6 +3,8 @@
 interface ImportMetaEnv {
   readonly VITE_SILVERFISH_RELAY_URL?: string;
   readonly VITE_CO_DEX_RELAY_URL?: string;
+  readonly VITE_SILVERFISH_PUBLIC_URL?: string;
+  readonly VITE_SILVERFISH_MANAGED_SERVICE?: string;
   readonly VITE_SILVERFISH_SUBSCRIBE_URL?: string;
 }
 

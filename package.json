@@ -1,13 +1,23 @@
 {
   "name": "silverfish",
   "private": true,
-  "workspaces": ["apps/desktop"],
+  "workspaces": [
+    "apps/desktop"
+  ],
   "scripts": {
     "dev": "npm --workspace apps/desktop run dev",
     "build": "npm --workspace apps/desktop run build",
-    "typecheck": "npm --workspace apps/desktop run typecheck",
+    "typecheck": "npm run typecheck:desktop && npm run typecheck:worker",
+    "typecheck:desktop": "npm --workspace apps/desktop run typecheck",
+    "typecheck:worker": "tsc --project workers/relay-proxy/tsconfig.json",
     "tauri": "npm --workspace apps/desktop run tauri",
+    "worker:types": "wrangler types workers/relay-proxy/src/worker-configuration.d.ts --config workers/relay-proxy/wrangler.jsonc --include-runtime false",
+    "deploy:worker": "wrangler deploy --config workers/relay-proxy/wrangler.jsonc",
     "smoke:relay": "node scripts/relay-smoke.mjs",
     "smoke:codex": "node scripts/codex-app-server-smoke.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260723.1",
+    "wrangler": "^4.114.0"
   }
 }
