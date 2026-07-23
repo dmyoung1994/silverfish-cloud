@@ -53,6 +53,14 @@ VITE_SILVERFISH_RELAY_URL=https://[2600:1900:4041:40e:0:1::]
 
 When set, this relay is used automatically and the relay URL field is hidden from the host setup screen. Leave it unset to keep the editable localhost default.
 
+The public landing page can link to a hosted Founding Host subscription checkout without putting payment credentials in the application. Create a $15/month subscription product in Lemon Squeezy, enable its customer portal and subscription-linked license keys, then set the public checkout URL:
+
+```sh
+VITE_SILVERFISH_SUBSCRIBE_URL=https://your-store.lemonsqueezy.com/buy/your-checkout-id
+```
+
+If this variable is unset, the pricing section remains visible but clearly marks checkout as not yet open. Payment, renewal, cancellation, receipts, and tax handling stay on the provider-hosted pages.
+
 For internet use, terminate TLS in front of the relay. Plain `ws://` is intended only for localhost development.
 
 ## Deploy the relay

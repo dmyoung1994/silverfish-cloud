@@ -14,6 +14,7 @@ import { SilverfishMark } from "./SilverfishMark";
 import "./landing.css";
 
 const downloadHref = "/downloads/Silverfish-macOS-arm64.dmg";
+const subscribeHref = import.meta.env.VITE_SILVERFISH_SUBSCRIBE_URL?.trim();
 
 const steps = [
   {
@@ -54,6 +55,23 @@ function DownloadLink({ compact = false }: { compact?: boolean }) {
     <a className={compact ? "download-link compact" : "download-link"} href={downloadHref} download>
       <ArrowDownToLine size={compact ? 16 : 18} />
       Download for macOS
+    </a>
+  );
+}
+
+function SubscriptionLink() {
+  if (!subscribeHref) {
+    return (
+      <span className="subscription-link unavailable" aria-disabled="true">
+        Checkout opening soon
+      </span>
+    );
+  }
+
+  return (
+    <a className="subscription-link" href={subscribeHref} target="_blank" rel="noreferrer">
+      Become a Founding Host
+      <ArrowRight size={17} />
     </a>
   );
 }
@@ -110,6 +128,7 @@ export function LandingPage() {
         <nav aria-label="Main navigation">
           <a href="#how-it-works">How it works</a>
           <a href="#security">Security</a>
+          <a href="#pricing">Pricing</a>
           <DownloadLink compact />
         </nav>
       </header>
@@ -175,6 +194,34 @@ export function LandingPage() {
         </div>
       </section>
 
+      <section className="pricing-section" id="pricing">
+        <div className="pricing-copy">
+          <p className="pricing-eyebrow">FOUNDING PLAN</p>
+          <h2>Pay for the host.<br />Bring everyone else.</h2>
+          <p>
+            Back the preview, lock in the founding rate, and help shape the collaboration layer
+            around the agent you already use.
+          </p>
+        </div>
+        <article className="pricing-card">
+          <header>
+            <div>
+              <span>Founding Host</span>
+              <strong><sup>$</sup>15<small>/ month</small></strong>
+            </div>
+            <em>Guests stay free</em>
+          </header>
+          <ul>
+            <li><Check size={16} /> Founding price locked while subscribed</li>
+            <li><Check size={16} /> Every Pro feature as it is released</li>
+            <li><Check size={16} /> Direct input into the product roadmap</li>
+            <li><Check size={16} /> Cancel anytime in the customer portal</li>
+          </ul>
+          <SubscriptionLink />
+          <p>The downloadable preview remains free while the founding plan is in early access.</p>
+        </article>
+      </section>
+
       <section className="landing-cta">
         <div>
           <h2>Bring your people<br />into the room.</h2>
@@ -186,7 +233,7 @@ export function LandingPage() {
       <footer className="landing-footer">
         <Brand />
         <p>A small creature for shared work around one powerful agent.</p>
-        <div><a href="#security">Security</a><a href="#top">Back to top</a></div>
+        <div><a href="#pricing">Pricing</a><a href="#security">Security</a><a href="#top">Back to top</a></div>
       </footer>
     </main>
   );
