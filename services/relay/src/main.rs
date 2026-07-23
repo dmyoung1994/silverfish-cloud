@@ -67,19 +67,10 @@ impl RelayLimits {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct AppState {
     rooms: Arc<RwLock<HashMap<Uuid, Room>>>,
     limits: RelayLimits,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            rooms: Arc::default(),
-            limits: RelayLimits::default(),
-        }
-    }
 }
 
 struct Room {
