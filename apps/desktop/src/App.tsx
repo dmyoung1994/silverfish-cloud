@@ -47,6 +47,7 @@ import {
   normalizeRelayUrl,
   openRelaySocket,
   parseRelayMessage,
+  type RelayRoomLimits,
   sendEncrypted,
   socketUrl,
 } from "./relay";
@@ -100,6 +101,7 @@ function HostApp() {
   const [roomSecrets, setRoomSecrets] = useState<{
     roomId: string;
     hostToken: string;
+    limits: RelayRoomLimits;
     key: Uint8Array<ArrayBuffer>;
   }>();
   const [error, setError] = useState("");
@@ -227,7 +229,7 @@ function HostApp() {
         actions={actions}
         isHost
         projectName={workspaceName(cwd)}
-        connectionLabel="Host · encrypted"
+        connectionLabel={hostConnectionLabel(roomSecrets?.limits)}
         inviteToast={inviteToast}
         creatingInvite={creatingInvite}
         onCreateInvite={createInvite}
@@ -622,6 +624,14 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function hostConnectionLabel(limits?: RelayRoomLimits): string {
+  if (!limits) return "Host · encrypted";
+  const guestLabel = `${limits.maxGuests} guest${limits.maxGuests === 1 ? "" : "s"}`;
+  if (!limits.expiresAtMs) return `Host · ${guestLabel}`;
+  const minutes = Math.max(1, Math.round((limits.expiresAtMs - Date.now()) / 60_000));
+  return `Host · ${guestLabel} · ${minutes} min`;
 }
 
 function SidebarSection({ icon, title, count, action, children }: { icon: React.ReactNode; title: string; count: number; action?: React.ReactNode; children: React.ReactNode }) {

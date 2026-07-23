@@ -7,6 +7,8 @@ services:
       CO_DEX_RELAY_ADDR: 0.0.0.0:8787
       CO_DEX_WEB_DIR: /app/web
       RUST_LOG: co_dex_relay=info,tower_http=info
+      SILVERFISH_MAX_GUESTS_PER_ROOM: ${SILVERFISH_MAX_GUESTS_PER_ROOM:-32}
+      SILVERFISH_ROOM_LIFETIME_SECONDS: ${SILVERFISH_ROOM_LIFETIME_SECONDS:-0}
     ports:
       - "8787:8787"
     restart: unless-stopped
@@ -15,4 +17,3 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
-

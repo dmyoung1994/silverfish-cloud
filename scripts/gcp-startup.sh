@@ -42,6 +42,8 @@ docker run --detach \
   --security-opt no-new-privileges=true \
   --env 'CO_DEX_RELAY_ADDR=[::]:8787' \
   --env 'CO_DEX_WEB_DIR=/app/web' \
+  --env 'SILVERFISH_MAX_GUESTS_PER_ROOM=1' \
+  --env 'SILVERFISH_ROOM_LIFETIME_SECONDS=3600' \
   --env 'RUST_LOG=co_dex_relay=info,tower_http=info' \
   "$image"
 

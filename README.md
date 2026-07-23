@@ -2,6 +2,8 @@
 
 Silverfish is a multiplayer client for a host-owned Codex session. The host runs the real agent and workspace locally; invited collaborators join in a browser and share prompts, steering, interruption, streamed commands and diffs, and one-time approvals.
 
+Silverfish is MIT-licensed and designed to be self-hosted. The paid product is the convenience of the managed relay, maintained desktop builds, and support—not an artificial restriction in the source.
+
 This repository contains a working macOS-first foundation:
 
 - a Tauri 2 host application using `codex app-server` over local stdio;
@@ -53,13 +55,13 @@ VITE_SILVERFISH_RELAY_URL=https://[2600:1900:4041:40e:0:1::]
 
 When set, this relay is used automatically and the relay URL field is hidden from the host setup screen. Leave it unset to keep the editable localhost default.
 
-The public landing page can link to a hosted Founding Host subscription checkout without putting payment credentials in the application. Create a $15/month subscription product in Lemon Squeezy, enable its customer portal and subscription-linked license keys, then set the public checkout URL:
+The public landing page can link to a hosted Founding Host subscription checkout without putting payment credentials in the application. Create a $15/month recurring product in Stripe Managed Payments, create its hosted checkout link, then set the public checkout URL:
 
 ```sh
-VITE_SILVERFISH_SUBSCRIBE_URL=https://your-store.lemonsqueezy.com/buy/your-checkout-id
+VITE_SILVERFISH_SUBSCRIBE_URL=https://buy.stripe.com/your-payment-link
 ```
 
-If this variable is unset, the pricing section remains visible but clearly marks checkout as not yet open. Payment, renewal, cancellation, receipts, and tax handling stay on the provider-hosted pages.
+If this variable is unset, the pricing section remains visible but clearly marks checkout as not yet open. Payment, renewal, cancellation, receipts, and merchant-of-record tax handling stay on Stripe-hosted pages.
 
 For internet use, terminate TLS in front of the relay. Plain `ws://` is intended only for localhost development.
 
@@ -72,6 +74,8 @@ docker compose up --build
 ```
 
 The relay stores room registrations only in memory, never stores transcript payloads, and cannot decrypt the ciphertext it forwards. A restart disconnects rooms; the host's Codex threads and recovery data remain local and guests resynchronize after reconnecting.
+
+Room capacity and hard lifetime are deployment settings, not application license checks. `SILVERFISH_MAX_GUESTS_PER_ROOM` defaults to 32, while `SILVERFISH_ROOM_LIFETIME_SECONDS` defaults to `0` (no hard deadline). The managed friends-and-family relay uses `1` guest and `3600` seconds for its free tier. Self-hosters can set either value independently.
 
 Production deployments should add a TLS reverse proxy, request-level rate limiting at the edge, and an origin allowlist appropriate to their domain. Health checks are available at `/healthz`.
 

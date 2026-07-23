@@ -36,14 +36,25 @@ export interface InviteCredentials {
   inviteToken: string;
 }
 
-export async function createRelayRoom(relayUrl: string): Promise<{ roomId: string; hostToken: string }> {
+export interface RelayRoomLimits {
+  maxGuests: number;
+  expiresAtMs?: number;
+}
+
+export interface RelayRoomCredentials {
+  roomId: string;
+  hostToken: string;
+  limits: RelayRoomLimits;
+}
+
+export async function createRelayRoom(relayUrl: string): Promise<RelayRoomCredentials> {
   const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/rooms`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
   });
   if (!response.ok) throw new Error(`Relay rejected room creation (${response.status})`);
-  return response.json() as Promise<{ roomId: string; hostToken: string }>;
+  return response.json() as Promise<RelayRoomCredentials>;
 }
 
 export async function createRelayInvite(relayUrl: string, roomId: string, hostToken: string): Promise<InviteCredentials> {

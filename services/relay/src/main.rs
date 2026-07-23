@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -32,14 +32,54 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
-const MAX_GUESTS_PER_ROOM: usize = 32;
+const DEFAULT_MAX_GUESTS_PER_ROOM: usize = 32;
 const MAX_ROOMS: usize = 10_000;
 const MAX_MESSAGES_PER_SECOND: u32 = 120;
 const ROOM_IDLE_TTL: Duration = Duration::from_secs(60 * 60 * 12);
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy)]
+struct RelayLimits {
+    max_guests_per_room: usize,
+    room_lifetime: Option<Duration>,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_guests_per_room: DEFAULT_MAX_GUESTS_PER_ROOM,
+            room_lifetime: None,
+        }
+    }
+}
+
+impl RelayLimits {
+    fn from_env() -> Self {
+        let defaults = Self::default();
+        let max_guests_per_room = parse_positive_env(
+            "SILVERFISH_MAX_GUESTS_PER_ROOM",
+            defaults.max_guests_per_room,
+        );
+        let room_lifetime = parse_optional_duration_env("SILVERFISH_ROOM_LIFETIME_SECONDS");
+        Self {
+            max_guests_per_room,
+            room_lifetime,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct AppState {
     rooms: Arc<RwLock<HashMap<Uuid, Room>>>,
+    limits: RelayLimits,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            rooms: Arc::default(),
+            limits: RelayLimits::default(),
+        }
+    }
 }
 
 struct Room {
@@ -48,6 +88,7 @@ struct Room {
     guests: HashMap<Uuid, Connection>,
     invites: HashMap<Uuid, Invite>,
     last_active: Instant,
+    expires_at: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -73,6 +114,14 @@ struct CreateRoomRequest {
 struct CreateRoomResponse {
     room_id: Uuid,
     host_token: String,
+    limits: RoomLimitsResponse,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoomLimitsResponse {
+    max_guests: usize,
+    expires_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,7 +198,16 @@ async fn main() {
         )
         .init();
 
-    let state = AppState::default();
+    let limits = RelayLimits::from_env();
+    info!(
+        max_guests_per_room = limits.max_guests_per_room,
+        room_lifetime_seconds = limits.room_lifetime.map(|value| value.as_secs()),
+        "relay limits configured"
+    );
+    let state = AppState {
+        rooms: Arc::default(),
+        limits,
+    };
     spawn_room_reaper(state.clone());
     let mut app = app(state);
     if let Ok(web_dir) = std::env::var("CO_DEX_WEB_DIR") {
@@ -193,12 +251,22 @@ async fn create_room(
 ) -> Result<Json<CreateRoomResponse>, ApiError> {
     let room_id = request.room_id.unwrap_or_else(Uuid::new_v4);
     let host_token = random_token();
+    let created_at = Instant::now();
+    let expires_at = state
+        .limits
+        .room_lifetime
+        .and_then(|lifetime| created_at.checked_add(lifetime));
+    let expires_at_ms = state
+        .limits
+        .room_lifetime
+        .and_then(system_time_after_duration_ms);
     let room = Room {
         host_token_hash: hash_token(&host_token),
         host: None,
         guests: HashMap::new(),
         invites: HashMap::new(),
-        last_active: Instant::now(),
+        last_active: created_at,
+        expires_at,
     };
     let mut rooms = state.rooms.write().await;
     if rooms.len() >= MAX_ROOMS {
@@ -210,6 +278,10 @@ async fn create_room(
     Ok(Json(CreateRoomResponse {
         room_id,
         host_token,
+        limits: RoomLimitsResponse {
+            max_guests: state.limits.max_guests_per_room,
+            expires_at_ms,
+        },
     }))
 }
 
@@ -221,6 +293,7 @@ async fn create_invite(
     let token = bearer(&headers)?;
     let mut rooms = state.rooms.write().await;
     let room = rooms.get_mut(&room_id).ok_or_else(ApiError::not_found)?;
+    require_live_room(room)?;
     require_token(&room.host_token_hash, token)?;
 
     let invite_id = Uuid::new_v4();
@@ -270,6 +343,7 @@ async fn revoke_invite(
     let token = bearer(&headers)?;
     let mut rooms = state.rooms.write().await;
     let room = rooms.get_mut(&room_id).ok_or_else(ApiError::not_found)?;
+    require_live_room(room)?;
     require_token(&room.host_token_hash, token)?;
     let invite = room
         .invites
@@ -305,6 +379,7 @@ async fn eject_connection(
     let token = bearer(&headers)?;
     let mut rooms = state.rooms.write().await;
     let room = rooms.get_mut(&room_id).ok_or_else(ApiError::not_found)?;
+    require_live_room(room)?;
     require_token(&room.host_token_hash, token)?;
     let connection = room
         .guests
@@ -338,10 +413,11 @@ async fn socket_upgrade(
     {
         let rooms = state.rooms.read().await;
         let room = rooms.get(&room_id).ok_or_else(ApiError::not_found)?;
+        require_live_room(room)?;
         match query.role {
             SocketRole::Host => require_token(&room.host_token_hash, &token)?,
             SocketRole::Guest => {
-                if room.guests.len() >= MAX_GUESTS_PER_ROOM {
+                if room.guests.len() >= state.limits.max_guests_per_room {
                     return Err(ApiError::too_many("room is full"));
                 }
                 let invite_id = query
@@ -387,10 +463,11 @@ async fn handle_socket(
     let mut rate_window = Instant::now();
     let mut messages_in_window = 0_u32;
 
-    if register_connection(&state, room_id, role, connection_id, invite_id, tx.clone())
-        .await
-        .is_err()
+    if let Err((code, message)) =
+        register_connection(&state, room_id, role, connection_id, invite_id, tx.clone()).await
     {
+        send_json(&tx, &ServerRelayMessage::Error { code, message });
+        let _ = tx.send(Message::Close(None));
         writer.abort();
         return;
     }
@@ -443,9 +520,17 @@ async fn register_connection(
     connection_id: Uuid,
     invite_id: Option<Uuid>,
     tx: mpsc::UnboundedSender<Message>,
-) -> Result<(), ()> {
+) -> Result<(), (&'static str, &'static str)> {
     let mut rooms = state.rooms.write().await;
-    let room = rooms.get_mut(&room_id).ok_or(())?;
+    let room = rooms
+        .get_mut(&room_id)
+        .ok_or(("room_not_found", "room not found"))?;
+    if room_is_expired(room) {
+        return Err(("room_expired", "this room has expired"));
+    }
+    if role == SocketRole::Guest && room.guests.len() >= state.limits.max_guests_per_room {
+        return Err(("room_full", "this room has reached its guest limit"));
+    }
     room.last_active = Instant::now();
     let connection = Connection {
         id: connection_id,
@@ -570,11 +655,16 @@ fn send_json(tx: &mpsc::UnboundedSender<Message>, message: &ServerRelayMessage) 
 
 fn spawn_room_reaper(state: AppState) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
             interval.tick().await;
             let mut rooms = state.rooms.write().await;
             rooms.retain(|room_id, room| {
+                if room_is_expired(room) {
+                    close_connections(room, "room_expired", "this room reached its time limit");
+                    info!(%room_id, "expired timed room");
+                    return false;
+                }
                 let keep = room.last_active.elapsed() < ROOM_IDLE_TTL
                     || room.host.is_some()
                     || !room.guests.is_empty();
@@ -585,6 +675,52 @@ fn spawn_room_reaper(state: AppState) {
             });
         }
     });
+}
+
+fn close_connections(room: &Room, code: &'static str, message: &'static str) {
+    for connection in room.guests.values().chain(room.host.iter()) {
+        send_json(&connection.tx, &ServerRelayMessage::Error { code, message });
+        let _ = connection.tx.send(Message::Close(None));
+    }
+}
+
+fn room_is_expired(room: &Room) -> bool {
+    room.expires_at
+        .is_some_and(|expires_at| Instant::now() >= expires_at)
+}
+
+fn require_live_room(room: &Room) -> Result<(), ApiError> {
+    if room_is_expired(room) {
+        Err(ApiError::gone("room expired"))
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_positive_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn parse_optional_duration_env(name: &str) -> Option<Duration> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+}
+
+fn system_time_after_duration_ms(duration: Duration) -> Option<u64> {
+    SystemTime::now()
+        .checked_add(duration)?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis()
+        .try_into()
+        .ok()
 }
 
 fn random_token() -> String {
@@ -663,6 +799,12 @@ impl ApiError {
             message,
         }
     }
+    fn gone(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            message,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -720,6 +862,42 @@ mod tests {
             serde_json::json!({
                 "type": "peerDisconnected",
                 "connectionId": connection_id,
+            })
+        );
+    }
+
+    #[test]
+    fn room_expiry_is_a_hard_deadline() {
+        let room = Room {
+            host_token_hash: [0; 32],
+            host: None,
+            guests: HashMap::new(),
+            invites: HashMap::new(),
+            last_active: Instant::now(),
+            expires_at: Some(Instant::now() - Duration::from_millis(1)),
+        };
+        assert!(room_is_expired(&room));
+        assert_eq!(
+            require_live_room(&room).unwrap_err().status,
+            StatusCode::GONE
+        );
+    }
+
+    #[test]
+    fn room_limits_use_camel_case_fields() {
+        let response = CreateRoomResponse {
+            room_id: Uuid::nil(),
+            host_token: "secret".into(),
+            limits: RoomLimitsResponse {
+                max_guests: 1,
+                expires_at_ms: Some(1234),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["limits"],
+            serde_json::json!({
+                "maxGuests": 1,
+                "expiresAtMs": 1234,
             })
         );
     }

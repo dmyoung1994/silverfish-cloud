@@ -218,7 +218,7 @@ export function LandingPage() {
             <li><Check size={16} /> Cancel anytime in the customer portal</li>
           </ul>
           <SubscriptionLink />
-          <p>The downloadable preview remains free while the founding plan is in early access.</p>
+          <p>Hosted preview rooms are free for one guest and up to 60 minutes. Self-hosted limits are configurable.</p>
         </article>
       </section>
 
