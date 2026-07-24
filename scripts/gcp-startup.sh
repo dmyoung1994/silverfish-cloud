@@ -31,6 +31,14 @@ printf '%s' "$token" | docker login \
   "https://${registry}"
 unset token
 
+proxy_secret="$(curl --fail --silent --show-error \
+  --header 'Metadata-Flavor: Google' \
+  'http://metadata.google.internal/computeMetadata/v1/instance/attributes/silverfish-relay-proxy-secret')"
+if [[ -z "$proxy_secret" ]]; then
+  echo 'Missing silverfish-relay-proxy-secret instance metadata' >&2
+  exit 1
+fi
+
 docker pull "$image"
 docker logout "$registry"
 docker rm --force co-dex-relay 2>/dev/null || true
@@ -44,9 +52,13 @@ docker run --detach \
   --env 'CO_DEX_RELAY_ADDR=[::]:8787' \
   --env 'CO_DEX_WEB_DIR=/app/web' \
   --env 'SILVERFISH_MAX_GUESTS_PER_ROOM=1' \
+  --env 'SILVERFISH_PAID_MAX_GUESTS_PER_ROOM=8' \
+  --env 'SILVERFISH_PAID_ROOM_LIFETIME_SECONDS=0' \
+  --env "SILVERFISH_RELAY_PROXY_SECRET=${proxy_secret}" \
   --env 'SILVERFISH_ROOM_LIFETIME_SECONDS=3600' \
   --env 'RUST_LOG=co_dex_relay=info,tower_http=info' \
   "$image"
+unset proxy_secret
 
 relay_ip="$(ip -6 -o address show dev ens4 scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1)"
 if [[ -z "$relay_ip" ]]; then

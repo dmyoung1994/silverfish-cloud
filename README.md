@@ -68,7 +68,9 @@ VITE_SILVERFISH_MANAGED_SERVICE=true
 VITE_SILVERFISH_SUBSCRIBE_URL=https://buy.stripe.com/your-payment-link
 ```
 
-`VITE_SILVERFISH_MANAGED_SERVICE` is false by default. Open-source and self-hosted builds therefore contain no subscription UI or license checks. If the official build has no checkout URL yet, it marks checkout as not yet open. Checkout, renewal, cancellation, receipts, and tax collection stay on Stripe-hosted pages; paid entitlements must be enforced by the managed service, never by the open-source client.
+`VITE_SILVERFISH_MANAGED_SERVICE` is false by default. Open-source and self-hosted builds therefore contain no subscription UI or license checks. If the official build has no checkout URL yet, it marks checkout as not yet open. Checkout, renewal, cancellation, receipts, and tax collection stay on Stripe-hosted pages.
+
+The official managed build creates a random per-install entitlement credential and passes it to Stripe Checkout as `client_reference_id`. Signed Stripe webhooks activate or revoke the credential in Cloudflare D1. The managed Worker validates that credential on room creation and asks the relay origin for the paid room limits over a separately authenticated proxy channel. Credentials are stored only as SHA-256 hashes at the edge, and payment details never enter Silverfish. Free managed rooms remain limited to one guest and 60 minutes; active Founding Host subscriptions receive up to eight guests without a hard room deadline.
 
 For internet use, terminate TLS in front of the relay. Plain `ws://` is intended only for localhost development.
 
@@ -82,7 +84,7 @@ docker compose up --build
 
 The relay stores room registrations only in memory, never stores transcript payloads, and cannot decrypt the ciphertext it forwards. A restart disconnects rooms; the host's Codex threads and recovery data remain local and guests resynchronize after reconnecting.
 
-Room capacity and hard lifetime are deployment settings, not application license checks. `SILVERFISH_MAX_GUESTS_PER_ROOM` defaults to 32, while `SILVERFISH_ROOM_LIFETIME_SECONDS` defaults to `0` (no hard deadline). The managed friends-and-family relay uses `1` guest and `3600` seconds for its free tier. Self-hosters can set either value independently.
+Room capacity and hard lifetime are deployment settings. `SILVERFISH_MAX_GUESTS_PER_ROOM` defaults to 32, while `SILVERFISH_ROOM_LIFETIME_SECONDS` defaults to `0` (no hard deadline). The managed relay uses `1` guest and `3600` seconds for its free tier. Self-hosters can set either value independently and do not need Stripe, D1, or the managed proxy secret.
 
 Production deployments should add a TLS reverse proxy, request-level rate limiting at the edge, and an origin allowlist appropriate to their domain. Health checks are available at `/healthz`.
 

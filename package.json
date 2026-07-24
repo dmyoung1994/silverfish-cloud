@@ -14,6 +14,7 @@
     "worker:types": "wrangler types workers/relay-proxy/src/worker-configuration.d.ts --config workers/relay-proxy/wrangler.jsonc --include-runtime false",
     "deploy:worker": "wrangler deploy --config workers/relay-proxy/wrangler.jsonc",
     "smoke:relay": "node scripts/relay-smoke.mjs",
+    "smoke:billing": "node scripts/billing-smoke.mjs",
     "smoke:codex": "node scripts/codex-app-server-smoke.mjs"
   },
   "devDependencies": {

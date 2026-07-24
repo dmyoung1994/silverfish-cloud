@@ -1,0 +1,50 @@
+import { normalizeRelayUrl } from "./relay";
+
+const ENTITLEMENT_STORAGE_KEY = "silverfish.managed-entitlement.v1";
+
+export interface ManagedEntitlement {
+  active: boolean;
+  plan: "free" | "founding_host";
+  maxGuests: number;
+  roomLifetimeSeconds: number | null;
+}
+
+export function getOrCreateEntitlementCredential(): string {
+  try {
+    const existing = window.localStorage.getItem(ENTITLEMENT_STORAGE_KEY);
+    if (isEntitlementCredential(existing)) return existing;
+    const created = createEntitlementCredential();
+    window.localStorage.setItem(ENTITLEMENT_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return createEntitlementCredential();
+  }
+}
+
+export function checkoutUrl(baseUrl: string, credential: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("client_reference_id", credential);
+  return url.toString();
+}
+
+export async function fetchManagedEntitlement(
+  relayUrl: string,
+  credential: string,
+): Promise<ManagedEntitlement> {
+  const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/billing/status`, {
+    headers: { authorization: `Bearer ${credential}` },
+  });
+  if (!response.ok) throw new Error(`Could not verify subscription (${response.status})`);
+  return response.json() as Promise<ManagedEntitlement>;
+}
+
+function createEntitlementCredential(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const binary = String.fromCharCode(...bytes);
+  return `sf_${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
+}
+
+function isEntitlementCredential(value: string | null): value is string {
+  return Boolean(value && /^sf_[A-Za-z0-9_-]{43}$/.test(value));
+}

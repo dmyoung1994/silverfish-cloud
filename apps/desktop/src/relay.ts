@@ -38,7 +38,7 @@ export interface InviteCredentials {
 
 export interface RelayRoomLimits {
   maxGuests: number;
-  expiresAtMs?: number;
+  expiresAtMs?: number | null;
 }
 
 export interface RelayRoomCredentials {
@@ -47,14 +47,32 @@ export interface RelayRoomCredentials {
   limits: RelayRoomLimits;
 }
 
-export async function createRelayRoom(relayUrl: string): Promise<RelayRoomCredentials> {
+export async function createRelayRoom(
+  relayUrl: string,
+  entitlementCredential?: string,
+): Promise<RelayRoomCredentials> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (entitlementCredential) headers.authorization = `Bearer ${entitlementCredential}`;
   const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/rooms`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: "{}",
   });
-  if (!response.ok) throw new Error(`Relay rejected room creation (${response.status})`);
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    const detail = isErrorPayload(payload) ? `: ${payload.error}` : "";
+    throw new Error(`Relay rejected room creation (${response.status})${detail}`);
+  }
   return response.json() as Promise<RelayRoomCredentials>;
+}
+
+function isErrorPayload(value: unknown): value is { error: string } {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && "error" in value
+    && typeof value.error === "string",
+  );
 }
 
 export async function createRelayInvite(relayUrl: string, roomId: string, hostToken: string): Promise<InviteCredentials> {

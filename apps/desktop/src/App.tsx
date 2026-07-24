@@ -2,21 +2,27 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
+  ArrowLeft,
   Bot,
   Check,
   ChevronRight,
+  Clock3,
   CircleStop,
   Clipboard,
   Command,
   Download,
+  ExternalLink,
   FileDiff,
   FolderOpen,
+  Infinity,
   KeyRound,
   Link2,
   LoaderCircle,
   MessageSquarePlus,
+  MonitorDown,
   Pause,
   Play,
+  RefreshCw,
   Send,
   ShieldCheck,
   Sparkles,
@@ -26,6 +32,12 @@ import {
 } from "lucide-react";
 import { LandingPage } from "./LandingPage";
 import { SilverfishMark } from "./SilverfishMark";
+import {
+  checkoutUrl,
+  fetchManagedEntitlement,
+  getOrCreateEntitlementCredential,
+  type ManagedEntitlement,
+} from "./billing";
 import { codex, type CodexStatus, type OptionalDependency } from "./codex";
 import { decodeBase64Url, decryptJson, encodeBase64Url, encryptJson, generateRoomKey } from "./crypto";
 import type {
@@ -81,6 +93,13 @@ interface RoomActions {
 }
 
 export default function App() {
+  const previewParams = import.meta.env.DEV ? new URLSearchParams(window.location.search) : undefined;
+  if (previewParams?.has("plan-preview")) {
+    return <PlanPreview paid={previewParams.has("paid-preview")} />;
+  }
+  if (!isTauriApp() && window.location.pathname === "/billing/success") {
+    return <BillingSuccess />;
+  }
   const guestCredentials = useMemo(parseGuestCredentials, []);
   if (guestCredentials) return <GuestApp credentials={guestCredentials} />;
   return isTauriApp() ? <HostApp /> : <LandingPage />;
@@ -88,6 +107,26 @@ export default function App() {
 
 function isTauriApp(): boolean {
   return "__TAURI_INTERNALS__" in window;
+}
+
+function PlanPreview({ paid }: { paid: boolean }) {
+  const [starting, setStarting] = useState(false);
+  const entitlement = paid
+    ? { active: true, plan: "founding_host" as const, maxGuests: 8, roomLifetimeSeconds: null }
+    : freeEntitlement;
+  const start = async () => setStarting(true);
+  return (
+    <PlanChooser
+      subscribeUrl={subscribeHref ? checkoutUrl(subscribeHref, `sf_${"a".repeat(43)}`) : undefined}
+      starting={starting}
+      checkingSubscription={false}
+      entitlement={entitlement}
+      onBack={() => undefined}
+      onChooseFree={start}
+      onChoosePaid={start}
+      onRefreshSubscription={async () => undefined}
+    />
+  );
 }
 
 function HostApp() {
@@ -100,6 +139,12 @@ function HostApp() {
   const [controller, setController] = useState<HostRoomController>();
   const [inviteToast, setInviteToast] = useState("");
   const [creatingInvite, setCreatingInvite] = useState(false);
+  const [showPlans, setShowPlans] = useState(false);
+  const [entitlementCredential] = useState(() => (
+    isManagedService ? getOrCreateEntitlementCredential() : ""
+  ));
+  const [entitlement, setEntitlement] = useState<ManagedEntitlement>(freeEntitlement);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
   const inviteToastTimeout = useRef<number | undefined>(undefined);
   const [roomSecrets, setRoomSecrets] = useState<{
     roomId: string;
@@ -112,6 +157,33 @@ function HostApp() {
   useEffect(() => {
     void codex.status().then(setStatus).catch(() => setError("Open this page in the Silverfish desktop app to host a room."));
   }, []);
+
+  useEffect(() => {
+    if (!isManagedService || !showPlans || !entitlementCredential) return;
+    let current = true;
+    const refresh = async () => {
+      setCheckingSubscription(true);
+      try {
+        const next = await fetchManagedEntitlement(relayUrl, entitlementCredential);
+        if (current) {
+          setEntitlement(next);
+          if (next.active) setError("");
+        }
+      } catch {
+        // The managed relay is authoritative at room creation, so a transient
+        // status-check failure should not discard a previously active plan.
+      } finally {
+        if (current) setCheckingSubscription(false);
+      }
+    };
+    const onFocus = () => void refresh();
+    void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      current = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [entitlementCredential, relayUrl, showPlans]);
 
   async function chooseWorkspace() {
     setError("");
@@ -144,7 +216,7 @@ function HostApp() {
     }
   }
 
-  async function connectAndHostRoom() {
+  async function connectAndHostRoom(credential?: string) {
     if (!cwd.trim()) {
       setError("Choose the workspace directory before sharing a session.");
       return;
@@ -154,7 +226,7 @@ function HostApp() {
     try {
       await codex.connect();
       const thread = (await codex.startThread(cwd)).thread;
-      const room = await createRelayRoom(relayUrl);
+      const room = await createRelayRoom(relayUrl, credential);
       const key = generateRoomKey();
       const socket = openRelaySocket(socketUrl(relayUrl, room.roomId, "host"), room.hostToken);
       const nextController = new HostRoomController(
@@ -173,6 +245,23 @@ function HostApp() {
       setError(String(reason));
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function refreshSubscription() {
+    if (!entitlementCredential) return;
+    setCheckingSubscription(true);
+    setError("");
+    try {
+      const next = await fetchManagedEntitlement(relayUrl, entitlementCredential);
+      setEntitlement(next);
+      if (!next.active) {
+        setError("Stripe has not activated this subscription yet. If you just paid, wait a few seconds and check again.");
+      }
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setCheckingSubscription(false);
     }
   }
 
@@ -235,7 +324,9 @@ function HostApp() {
         connectionLabel="Host · encrypted"
         roomLimits={roomSecrets?.limits}
         managedService={isManagedService}
-        subscribeHref={subscribeHref}
+        subscribeHref={subscribeHref && entitlementCredential
+          ? checkoutUrl(subscribeHref, entitlementCredential)
+          : undefined}
         inviteToast={inviteToast}
         creatingInvite={creatingInvite}
         onCreateInvite={createInvite}
@@ -247,6 +338,26 @@ function HostApp() {
   }
 
   const connectBlocker = connectDisabledReason(status, cwd, starting, installingDependency);
+
+  if (showPlans && isManagedService) {
+    return (
+      <PlanChooser
+        subscribeUrl={subscribeHref && entitlementCredential
+          ? checkoutUrl(subscribeHref, entitlementCredential)
+          : undefined}
+        starting={starting}
+        checkingSubscription={checkingSubscription}
+        entitlement={entitlement}
+        onBack={() => {
+          if (!starting) setShowPlans(false);
+        }}
+        onChooseFree={() => connectAndHostRoom()}
+        onChoosePaid={() => connectAndHostRoom(entitlementCredential)}
+        onRefreshSubscription={refreshSubscription}
+        error={error}
+      />
+    );
+  }
 
   return (
     <main className="setup-shell">
@@ -288,15 +399,25 @@ function HostApp() {
               <input value={relayUrl} onChange={(event) => setRelayUrl(event.target.value)} placeholder="https://relay.example.com" />
             </label>
           ) : null}
-          {isManagedService ? <HostedPlanCard subscribeUrl={subscribeHref} /> : null}
           <div
             className="button-tooltip"
             data-tooltip={connectBlocker || undefined}
             tabIndex={connectBlocker ? 0 : undefined}
           >
-            <button className="primary" onClick={connectAndHostRoom} disabled={Boolean(connectBlocker)}>
+            <button
+              className="primary"
+              onClick={() => {
+                if (isManagedService) {
+                  setError("");
+                  setShowPlans(true);
+                } else {
+                  void connectAndHostRoom();
+                }
+              }}
+              disabled={Boolean(connectBlocker)}
+            >
               {starting ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />}
-              Connect &amp; create room
+              Start session
             </button>
           </div>
           {error && <div className="error-banner">{error}</div>}
@@ -379,23 +500,168 @@ function StatusGrid({ status, installing, onInstall }: {
   );
 }
 
-function HostedPlanCard({ subscribeUrl }: { subscribeUrl?: string }) {
+const freeEntitlement: ManagedEntitlement = {
+  active: false,
+  plan: "free",
+  maxGuests: 1,
+  roomLifetimeSeconds: 60 * 60,
+};
+
+function PlanChooser({
+  subscribeUrl,
+  starting,
+  checkingSubscription,
+  entitlement,
+  onBack,
+  onChooseFree,
+  onChoosePaid,
+  onRefreshSubscription,
+  error,
+}: {
+  subscribeUrl?: string;
+  starting: boolean;
+  checkingSubscription: boolean;
+  entitlement: ManagedEntitlement;
+  onBack: () => void;
+  onChooseFree: () => Promise<void>;
+  onChoosePaid: () => Promise<void>;
+  onRefreshSubscription: () => Promise<void>;
+  error?: string;
+}) {
+  const [pendingPlan, setPendingPlan] = useState<"free" | "founding_host">();
+  const startingFree = starting && pendingPlan === "free";
+  const startingPaid = starting && pendingPlan === "founding_host";
   return (
-    <div className="hosted-plan-card">
-      <div>
-        <span>HOSTED FREE</span>
-        <strong>1 guest · 60-minute rooms</strong>
-        <p>No account or card required. Self-hosted relays are always separate and use their own limits.</p>
-      </div>
-      {subscribeUrl ? (
-        <a href={subscribeUrl} target="_blank" rel="noreferrer">
-          Founding Host · $15/month
-          <ChevronRight size={15} />
-        </a>
-      ) : (
-        <span className="hosted-plan-pending">Founding Host · $15/month · checkout opening soon</span>
-      )}
-    </div>
+    <main className="plan-shell">
+      <header className="plan-topbar">
+        <div className="plan-brand">
+          <span><SilverfishMark size={24} /></span>
+          <strong>Silverfish</strong>
+        </div>
+      </header>
+
+      <section className="plan-content" aria-labelledby="plan-title">
+        <button type="button" className="plan-back" onClick={onBack} disabled={starting}>
+          <ArrowLeft size={17} />
+          Back
+        </button>
+        <div className="plan-heading">
+          <h1 id="plan-title">Choose how you want to host</h1>
+          <p>Start free, or unlock longer rooms for your team.</p>
+        </div>
+
+        <div className="plan-grid">
+          <article className="plan-card free-plan">
+            <header>
+              <h2>Free</h2>
+              <div className="plan-price"><sup>$</sup><strong>0</strong></div>
+              <p>No account required</p>
+            </header>
+            <ul>
+              <PlanFeature icon={<Users size={21} />}>1 guest</PlanFeature>
+              <PlanFeature icon={<Clock3 size={21} />}>60-minute rooms</PlanFeature>
+              <PlanFeature icon={<ShieldCheck size={21} />}>End-to-end encrypted</PlanFeature>
+            </ul>
+            <button
+              type="button"
+              className="plan-cta free-cta"
+              onClick={() => {
+                setPendingPlan("free");
+                void onChooseFree();
+              }}
+              disabled={starting}
+            >
+              {startingFree ? <LoaderCircle className="spin" size={18} /> : null}
+              {startingFree ? "Starting session…" : "Start free session"}
+            </button>
+          </article>
+
+          <article className="plan-card founding-plan">
+            <header>
+              <div className="founding-title">
+                <h2>Founding Host</h2>
+                <span>{entitlement.active ? "Active" : "Recommended"}</span>
+              </div>
+              <div className="plan-price"><sup>$</sup><strong>15</strong><small>/ month</small></div>
+              <p>Founding rate stays locked while subscribed</p>
+            </header>
+            <ul>
+              <PlanFeature icon={<Users size={21} />}>Up to 8 guests</PlanFeature>
+              <PlanFeature icon={<Infinity size={21} />}>No room time limit</PlanFeature>
+              <PlanFeature icon={<ShieldCheck size={21} />}>End-to-end encrypted</PlanFeature>
+              <PlanFeature icon={<MonitorDown size={21} />}>Maintained desktop builds</PlanFeature>
+              <PlanFeature icon={<Sparkles size={21} />}>Early access to hosted features</PlanFeature>
+            </ul>
+            {entitlement.active ? (
+              <button
+                type="button"
+                className="plan-cta founding-cta"
+                onClick={() => {
+                  setPendingPlan("founding_host");
+                  void onChoosePaid();
+                }}
+                disabled={starting}
+              >
+                {startingPaid ? <LoaderCircle className="spin" size={18} /> : null}
+                {startingPaid ? "Starting session…" : "Start Founding Host session"}
+              </button>
+            ) : subscribeUrl ? (
+              <a className="plan-cta founding-cta" href={subscribeUrl} target="_blank" rel="noreferrer">
+                Choose Founding Host
+                <ExternalLink size={17} />
+              </a>
+            ) : (
+              <span className="plan-cta founding-cta unavailable" aria-disabled="true">
+                Checkout opening soon
+              </span>
+            )}
+            {!entitlement.active && subscribeUrl ? (
+              <button
+                type="button"
+                className="plan-refresh"
+                onClick={() => void onRefreshSubscription()}
+                disabled={checkingSubscription || starting}
+              >
+                <RefreshCw className={checkingSubscription ? "spin" : undefined} size={14} />
+                {checkingSubscription ? "Checking subscription…" : "Already subscribed? Check status"}
+              </button>
+            ) : null}
+          </article>
+        </div>
+
+        {error ? <div className="plan-error">{error}</div> : null}
+        <p className="plan-footnote">You can change plans any time.</p>
+      </section>
+    </main>
+  );
+}
+
+function BillingSuccess() {
+  return (
+    <main className="plan-shell billing-success-shell">
+      <header className="plan-topbar">
+        <div className="plan-brand">
+          <span><SilverfishMark size={24} /></span>
+          <strong>Silverfish</strong>
+        </div>
+      </header>
+      <section className="billing-success">
+        <span className="billing-success-mark"><Check size={30} /></span>
+        <p className="eyebrow">FOUNDING HOST</p>
+        <h1>Subscription received.</h1>
+        <p>Return to the Silverfish desktop app. It verifies your subscription automatically when the app regains focus.</p>
+        <p className="billing-success-note">If activation takes more than a few seconds, choose “Already subscribed? Check status.”</p>
+      </section>
+    </main>
+  );
+}
+
+function PlanFeature({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <li>
+      <span>{icon}</span>
+      {children}
+    </li>
   );
 }
 
@@ -596,7 +862,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
       </header>
       {inviteToast ? <div className="invite-toast" role="status"><Check size={16} /><span>{inviteToast}</span></div> : null}
       <div className="room-banners">
-        {isHost && managedService && roomLimits ? (
+        {isHost && managedService && roomLimits?.expiresAtMs ? (
           <div className="hosted-room-banner">
             <span><strong>Hosted free room</strong> · {roomLimitSummary(roomLimits, now)}</span>
             {subscribeHref ? <a href={subscribeHref} target="_blank" rel="noreferrer">Upgrade</a> : null}
@@ -684,8 +950,8 @@ function roomLimitSummary(limits: RelayRoomLimits, now: number): string {
 }
 
 function friendlyRelayError(code: string, fallback: string): string {
-  if (code === "room_full") return "This hosted free room already has its one guest.";
-  if (code === "room_expired") return "This hosted free room reached its 60-minute limit. Ask the host to start a new room.";
+  if (code === "room_full") return "This room has reached its guest limit.";
+  if (code === "room_expired") return "This room reached its time limit. Ask the host to start a new room.";
   return fallback;
 }
 

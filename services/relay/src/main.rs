@@ -33,9 +33,12 @@ use uuid::Uuid;
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_MAX_GUESTS_PER_ROOM: usize = 32;
+const DEFAULT_PAID_MAX_GUESTS_PER_ROOM: usize = 8;
 const MAX_ROOMS: usize = 10_000;
 const MAX_MESSAGES_PER_SECOND: u32 = 120;
 const ROOM_IDLE_TTL: Duration = Duration::from_secs(60 * 60 * 12);
+const MANAGED_PLAN_HEADER: &str = "x-silverfish-managed-plan";
+const PROXY_SECRET_HEADER: &str = "x-silverfish-proxy-secret";
 
 #[derive(Clone, Copy)]
 struct RelayLimits {
@@ -65,12 +68,24 @@ impl RelayLimits {
             room_lifetime,
         }
     }
+
+    fn paid_from_env() -> Self {
+        Self {
+            max_guests_per_room: parse_positive_env(
+                "SILVERFISH_PAID_MAX_GUESTS_PER_ROOM",
+                DEFAULT_PAID_MAX_GUESTS_PER_ROOM,
+            ),
+            room_lifetime: parse_optional_duration_env("SILVERFISH_PAID_ROOM_LIFETIME_SECONDS"),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
 struct AppState {
     rooms: Arc<RwLock<HashMap<Uuid, Room>>>,
     limits: RelayLimits,
+    paid_limits: RelayLimits,
+    proxy_secret_hash: Option<[u8; 32]>,
 }
 
 struct Room {
@@ -80,6 +95,7 @@ struct Room {
     invites: HashMap<Uuid, Invite>,
     last_active: Instant,
     expires_at: Option<Instant>,
+    limits: RelayLimits,
 }
 
 #[derive(Clone)]
@@ -190,14 +206,24 @@ async fn main() {
         .init();
 
     let limits = RelayLimits::from_env();
+    let paid_limits = RelayLimits::paid_from_env();
+    let proxy_secret_hash = std::env::var("SILVERFISH_RELAY_PROXY_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| hash_token(&value));
     info!(
         max_guests_per_room = limits.max_guests_per_room,
         room_lifetime_seconds = limits.room_lifetime.map(|value| value.as_secs()),
+        paid_max_guests_per_room = paid_limits.max_guests_per_room,
+        paid_room_lifetime_seconds = paid_limits.room_lifetime.map(|value| value.as_secs()),
+        managed_entitlements_enabled = proxy_secret_hash.is_some(),
         "relay limits configured"
     );
     let state = AppState {
         rooms: Arc::default(),
         limits,
+        paid_limits,
+        proxy_secret_hash,
     };
     spawn_room_reaper(state.clone());
     let mut app = app(state);
@@ -238,19 +264,17 @@ fn app(state: AppState) -> Router {
 
 async fn create_room(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateRoomRequest>,
 ) -> Result<Json<CreateRoomResponse>, ApiError> {
     let room_id = request.room_id.unwrap_or_else(Uuid::new_v4);
     let host_token = random_token();
     let created_at = Instant::now();
-    let expires_at = state
-        .limits
+    let limits = room_limits_for_request(&state, &headers);
+    let expires_at = limits
         .room_lifetime
         .and_then(|lifetime| created_at.checked_add(lifetime));
-    let expires_at_ms = state
-        .limits
-        .room_lifetime
-        .and_then(system_time_after_duration_ms);
+    let expires_at_ms = limits.room_lifetime.and_then(system_time_after_duration_ms);
     let room = Room {
         host_token_hash: hash_token(&host_token),
         host: None,
@@ -258,6 +282,7 @@ async fn create_room(
         invites: HashMap::new(),
         last_active: created_at,
         expires_at,
+        limits,
     };
     let mut rooms = state.rooms.write().await;
     if rooms.len() >= MAX_ROOMS {
@@ -270,7 +295,7 @@ async fn create_room(
         room_id,
         host_token,
         limits: RoomLimitsResponse {
-            max_guests: state.limits.max_guests_per_room,
+            max_guests: limits.max_guests_per_room,
             expires_at_ms,
         },
     }))
@@ -408,7 +433,7 @@ async fn socket_upgrade(
         match query.role {
             SocketRole::Host => require_token(&room.host_token_hash, &token)?,
             SocketRole::Guest => {
-                if room.guests.len() >= state.limits.max_guests_per_room {
+                if room.guests.len() >= room.limits.max_guests_per_room {
                     return Err(ApiError::too_many("room is full"));
                 }
                 let invite_id = query
@@ -519,7 +544,7 @@ async fn register_connection(
     if room_is_expired(room) {
         return Err(("room_expired", "this room has expired"));
     }
-    if role == SocketRole::Guest && room.guests.len() >= state.limits.max_guests_per_room {
+    if role == SocketRole::Guest && room.guests.len() >= room.limits.max_guests_per_room {
         return Err(("room_full", "this room has reached its guest limit"));
     }
     room.last_active = Instant::now();
@@ -678,6 +703,30 @@ fn close_connections(room: &Room, code: &'static str, message: &'static str) {
 fn room_is_expired(room: &Room) -> bool {
     room.expires_at
         .is_some_and(|expires_at| Instant::now() >= expires_at)
+}
+
+fn room_limits_for_request(state: &AppState, headers: &HeaderMap) -> RelayLimits {
+    let Some(expected_hash) = state.proxy_secret_hash else {
+        return state.limits;
+    };
+    if headers
+        .get(MANAGED_PLAN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        != Some("founding_host")
+    {
+        return state.limits;
+    }
+    let Some(provided_secret) = headers
+        .get(PROXY_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return state.limits;
+    };
+    if bool::from(hash_token(provided_secret).ct_eq(&expected_hash)) {
+        state.paid_limits
+    } else {
+        state.limits
+    }
 }
 
 fn require_live_room(room: &Room) -> Result<(), ApiError> {
@@ -866,6 +915,7 @@ mod tests {
             invites: HashMap::new(),
             last_active: Instant::now(),
             expires_at: Some(Instant::now() - Duration::from_millis(1)),
+            limits: RelayLimits::default(),
         };
         assert!(room_is_expired(&room));
         assert_eq!(
@@ -890,6 +940,57 @@ mod tests {
                 "maxGuests": 1,
                 "expiresAtMs": 1234,
             })
+        );
+    }
+
+    #[test]
+    fn paid_limits_require_the_managed_proxy_secret() {
+        let state = AppState {
+            limits: RelayLimits {
+                max_guests_per_room: 1,
+                room_lifetime: Some(Duration::from_secs(3600)),
+            },
+            paid_limits: RelayLimits {
+                max_guests_per_room: 8,
+                room_lifetime: None,
+            },
+            proxy_secret_hash: Some(hash_token("correct secret")),
+            ..AppState::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(MANAGED_PLAN_HEADER, "founding_host".parse().unwrap());
+        headers.insert(PROXY_SECRET_HEADER, "wrong secret".parse().unwrap());
+        assert_eq!(
+            room_limits_for_request(&state, &headers).max_guests_per_room,
+            1
+        );
+
+        headers.insert(PROXY_SECRET_HEADER, "correct secret".parse().unwrap());
+        let paid = room_limits_for_request(&state, &headers);
+        assert_eq!(paid.max_guests_per_room, 8);
+        assert!(paid.room_lifetime.is_none());
+    }
+
+    #[test]
+    fn self_hosted_relays_ignore_managed_plan_headers() {
+        let state = AppState {
+            limits: RelayLimits {
+                max_guests_per_room: 32,
+                room_lifetime: None,
+            },
+            paid_limits: RelayLimits {
+                max_guests_per_room: 8,
+                room_lifetime: None,
+            },
+            proxy_secret_hash: None,
+            ..AppState::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(MANAGED_PLAN_HEADER, "founding_host".parse().unwrap());
+        headers.insert(PROXY_SECRET_HEADER, "anything".parse().unwrap());
+        assert_eq!(
+            room_limits_for_request(&state, &headers).max_guests_per_room,
+            32
         );
     }
 }

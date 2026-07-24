@@ -21,7 +21,23 @@
       "/healthz"
     ]
   },
+  "d1_databases": [
+    {
+      "binding": "ENTITLEMENTS",
+      "database_name": "silverfish-entitlements",
+      "database_id": "20072e60-97f9-48a7-a617-a123723fcf35",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "RELAY_PROXY_SECRET",
+      "STRIPE_WEBHOOK_SECRET"
+    ]
+  },
   "vars": {
-    "ORIGIN_URL": "https://2600-1900-4041-40e-0-1-0-0.sslip.io"
+    "EXPECTED_STRIPE_PAYMENT_LINK_ID": "pending",
+    "ORIGIN_URL": "https://2600-1900-4041-40e-0-1-0-0.sslip.io",
+    "PAID_MAX_GUESTS": "8"
   }
 }
