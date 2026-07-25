@@ -1,12 +1,12 @@
 mod audit;
 mod codex;
-mod oauth;
+mod google_auth;
 mod recovery;
 
 use std::sync::Arc;
 
 use codex::{CodexClient, CodexStatus};
-use oauth::OAuthLoopbackState;
+use google_auth::{GoogleAuthState, GoogleLoginResult};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 #[derive(Default)]
 struct RuntimeState {
     codex: Mutex<Option<Arc<CodexClient>>>,
-    oauth: Arc<OAuthLoopbackState>,
+    google_auth: Arc<GoogleAuthState>,
 }
 
 #[tauri::command]
@@ -207,16 +207,26 @@ async fn append_audit_event(
 }
 
 #[tauri::command]
-async fn start_google_oauth_loopback(
+async fn login_with_google(
     app: AppHandle,
     state: State<'_, RuntimeState>,
-) -> Result<u16, String> {
-    oauth::start(app, state.oauth.clone()).await
+    client_id: String,
+    client_secret: String,
+    firebase_api_key: String,
+) -> Result<GoogleLoginResult, String> {
+    google_auth::login(
+        app,
+        state.google_auth.clone(),
+        client_id,
+        client_secret,
+        firebase_api_key,
+    )
+    .await
 }
 
 #[tauri::command]
-async fn cancel_google_oauth_loopback(state: State<'_, RuntimeState>) -> Result<(), String> {
-    oauth::cancel(state.oauth.clone()).await;
+async fn cancel_google_login(state: State<'_, RuntimeState>) -> Result<(), String> {
+    google_auth::cancel(state.google_auth.clone()).await;
     Ok(())
 }
 
@@ -256,8 +266,8 @@ pub fn run() {
             create_recovery_point,
             restore_recovery_point,
             append_audit_event,
-            start_google_oauth_loopback,
-            cancel_google_oauth_loopback,
+            login_with_google,
+            cancel_google_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Silverfish");
