@@ -38,6 +38,27 @@ export async function fetchManagedEntitlement(
   return response.json() as Promise<ManagedEntitlement>;
 }
 
+export async function attachHostEntitlement(
+  relayUrl: string,
+  firebaseIdToken: string,
+  credential: string,
+): Promise<ManagedEntitlement> {
+  const response = await fetch(`${normalizeRelayUrl(relayUrl)}/api/billing/attach-account`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${firebaseIdToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ credential }),
+  });
+  const body = await response.json() as ManagedEntitlement | { error: string };
+  if (!response.ok) {
+    const message = "error" in body ? body.error : `Could not attach subscription (${response.status})`;
+    throw new Error(message);
+  }
+  return body as ManagedEntitlement;
+}
+
 function createEntitlementCredential(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);

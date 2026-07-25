@@ -38,6 +38,7 @@
   "vars": {
     "EXPECTED_STRIPE_PAYMENT_LINK_ID": "plink_1TwaWm8BrcdmT7aM5jfn11nU",
     "ORIGIN_URL": "https://2600-1900-4041-40e-0-1-0-0.sslip.io",
-    "PAID_MAX_GUESTS": "8"
+    "PAID_MAX_GUESTS": "8",
+    "FIREBASE_PROJECT_ID": ""
   }
 }

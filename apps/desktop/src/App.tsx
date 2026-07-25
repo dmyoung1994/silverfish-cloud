@@ -33,12 +33,14 @@ import {
 import { LandingPage } from "./LandingPage";
 import { SilverfishMark } from "./SilverfishMark";
 import {
+  attachHostEntitlement,
   checkoutUrl,
   fetchManagedEntitlement,
   getOrCreateEntitlementCredential,
   type ManagedEntitlement,
 } from "./billing";
 import { codex, type CodexStatus, type OptionalDependency } from "./codex";
+import { googleLoginAvailable, loginWithGoogle } from "./googleAuth";
 import { decodeBase64Url, decryptJson, encodeBase64Url, encryptJson, generateRoomKey } from "./crypto";
 import type {
   ApprovalDecision,
@@ -50,6 +52,7 @@ import type {
   SequencedHostEvent,
   TimelineItem,
 } from "./protocol";
+import { PLANS } from "./plans";
 import { HostRoomController, workspaceName } from "./room-controller";
 import {
   createRelayInvite,
@@ -120,11 +123,13 @@ function PlanPreview({ paid }: { paid: boolean }) {
       subscribeUrl={subscribeHref ? checkoutUrl(subscribeHref, `sf_${"a".repeat(43)}`) : undefined}
       starting={starting}
       checkingSubscription={false}
+      loggingIn={false}
       entitlement={entitlement}
       onBack={() => undefined}
       onChooseFree={start}
       onChoosePaid={start}
       onRefreshSubscription={async () => undefined}
+      onGoogleLogin={async () => undefined}
     />
   );
 }
@@ -145,6 +150,7 @@ function HostApp() {
   ));
   const [entitlement, setEntitlement] = useState<ManagedEntitlement>(freeEntitlement);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
   const inviteToastTimeout = useRef<number | undefined>(undefined);
   const [roomSecrets, setRoomSecrets] = useState<{
     roomId: string;
@@ -265,6 +271,24 @@ function HostApp() {
     }
   }
 
+  async function loginWithGoogleAccount() {
+    if (!entitlementCredential || loggingIn) return;
+    setLoggingIn(true);
+    setError("");
+    try {
+      const { firebaseIdToken } = await loginWithGoogle();
+      const next = await attachHostEntitlement(relayUrl, firebaseIdToken, entitlementCredential);
+      setEntitlement(next);
+      if (!next.active) {
+        setError("Signed in, but no active Founding Host subscription was found for that Google account.");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
   async function createInvite() {
     if (!roomSecrets || creatingInvite) return;
     setCreatingInvite(true);
@@ -347,6 +371,7 @@ function HostApp() {
           : undefined}
         starting={starting}
         checkingSubscription={checkingSubscription}
+        loggingIn={loggingIn}
         entitlement={entitlement}
         onBack={() => {
           if (!starting) setShowPlans(false);
@@ -354,6 +379,7 @@ function HostApp() {
         onChooseFree={() => connectAndHostRoom()}
         onChoosePaid={() => connectAndHostRoom(entitlementCredential)}
         onRefreshSubscription={refreshSubscription}
+        onGoogleLogin={loginWithGoogleAccount}
         error={error}
       />
     );
@@ -420,6 +446,17 @@ function HostApp() {
               Start session
             </button>
           </div>
+          {isManagedService && googleLoginAvailable() && !entitlement.active ? (
+            <button
+              type="button"
+              className="plan-refresh"
+              onClick={() => void loginWithGoogleAccount()}
+              disabled={loggingIn}
+            >
+              <RefreshCw className={loggingIn ? "spin" : undefined} size={14} />
+              {loggingIn ? "Signing in…" : "Already a Founding Host? Log in with Google"}
+            </button>
+          ) : null}
           {error && <div className="error-banner">{error}</div>}
         </div>
       </section>
@@ -503,7 +540,7 @@ function StatusGrid({ status, installing, onInstall }: {
 const freeEntitlement: ManagedEntitlement = {
   active: false,
   plan: "free",
-  maxGuests: 1,
+  maxGuests: PLANS.free.maxGuests,
   roomLifetimeSeconds: 60 * 60,
 };
 
@@ -511,21 +548,25 @@ function PlanChooser({
   subscribeUrl,
   starting,
   checkingSubscription,
+  loggingIn,
   entitlement,
   onBack,
   onChooseFree,
   onChoosePaid,
   onRefreshSubscription,
+  onGoogleLogin,
   error,
 }: {
   subscribeUrl?: string;
   starting: boolean;
   checkingSubscription: boolean;
+  loggingIn: boolean;
   entitlement: ManagedEntitlement;
   onBack: () => void;
   onChooseFree: () => Promise<void>;
   onChoosePaid: () => Promise<void>;
   onRefreshSubscription: () => Promise<void>;
+  onGoogleLogin: () => Promise<void>;
   error?: string;
 }) {
   const [pendingPlan, setPendingPlan] = useState<"free" | "founding_host">();
@@ -553,13 +594,13 @@ function PlanChooser({
         <div className="plan-grid">
           <article className="plan-card free-plan">
             <header>
-              <h2>Free</h2>
-              <div className="plan-price"><sup>$</sup><strong>0</strong></div>
-              <p>No account required</p>
+              <h2>{PLANS.free.name}</h2>
+              <div className="plan-price"><sup>$</sup><strong>{PLANS.free.priceLabel.replace("$", "")}</strong></div>
+              <p>{PLANS.free.tagline}</p>
             </header>
             <ul>
-              <PlanFeature icon={<Users size={21} />}>1 guest</PlanFeature>
-              <PlanFeature icon={<Clock3 size={21} />}>60-minute rooms</PlanFeature>
+              <PlanFeature icon={<Users size={21} />}>{`${PLANS.free.maxGuests} guest`}</PlanFeature>
+              <PlanFeature icon={<Clock3 size={21} />}>{PLANS.free.roomLifetimeLabel}</PlanFeature>
               <PlanFeature icon={<ShieldCheck size={21} />}>End-to-end encrypted</PlanFeature>
             </ul>
             <button
@@ -579,15 +620,15 @@ function PlanChooser({
           <article className="plan-card founding-plan">
             <header>
               <div className="founding-title">
-                <h2>Founding Host</h2>
+                <h2>{PLANS.founding_host.name}</h2>
                 <span>{entitlement.active ? "Active" : "Recommended"}</span>
               </div>
-              <div className="plan-price"><sup>$</sup><strong>15</strong><small>/ month</small></div>
-              <p>Founding rate stays locked while subscribed</p>
+              <div className="plan-price"><sup>$</sup><strong>{PLANS.founding_host.priceLabel.replace("$", "")}</strong><small>{PLANS.founding_host.priceSuffix}</small></div>
+              <p>{PLANS.founding_host.tagline}</p>
             </header>
             <ul>
-              <PlanFeature icon={<Users size={21} />}>Up to 8 guests</PlanFeature>
-              <PlanFeature icon={<Infinity size={21} />}>No room time limit</PlanFeature>
+              <PlanFeature icon={<Users size={21} />}>{`Up to ${PLANS.founding_host.maxGuests} guests`}</PlanFeature>
+              <PlanFeature icon={<Infinity size={21} />}>{PLANS.founding_host.roomLifetimeLabel}</PlanFeature>
               <PlanFeature icon={<ShieldCheck size={21} />}>End-to-end encrypted</PlanFeature>
               <PlanFeature icon={<MonitorDown size={21} />}>Maintained desktop builds</PlanFeature>
               <PlanFeature icon={<Sparkles size={21} />}>Early access to hosted features</PlanFeature>
@@ -624,6 +665,17 @@ function PlanChooser({
               >
                 <RefreshCw className={checkingSubscription ? "spin" : undefined} size={14} />
                 {checkingSubscription ? "Checking subscription…" : "Already subscribed? Check status"}
+              </button>
+            ) : null}
+            {!entitlement.active && googleLoginAvailable() ? (
+              <button
+                type="button"
+                className="plan-refresh"
+                onClick={() => void onGoogleLogin()}
+                disabled={loggingIn || starting}
+              >
+                <RefreshCw className={loggingIn ? "spin" : undefined} size={14} />
+                {loggingIn ? "Signing in…" : "Already a Founding Host? Log in with Google"}
               </button>
             ) : null}
           </article>

@@ -1,4 +1,5 @@
 import {
+  attachAccountEntitlement,
   handleStripeWebhook,
   hasActiveEntitlement,
   hasEntitlementCredential,
@@ -7,6 +8,7 @@ import {
 
 const STRIPE_WEBHOOK_PATH = "/api/stripe/webhook";
 const ENTITLEMENT_STATUS_PATH = "/api/billing/status";
+const ATTACH_ACCOUNT_PATH = "/api/billing/attach-account";
 const MANAGED_PLAN_HEADER = "x-silverfish-managed-plan";
 const PROXY_SECRET_HEADER = "x-silverfish-proxy-secret";
 
@@ -22,6 +24,13 @@ export default {
       if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
       if (request.method !== "GET") return corsResponse(new Response("Method not allowed", { status: 405 }));
       return corsResponse(Response.json(await readEntitlementStatus(request, env)));
+    }
+
+    if (incoming.pathname === ATTACH_ACCOUNT_PATH) {
+      if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
+      if (request.method !== "POST") return corsResponse(new Response("Method not allowed", { status: 405 }));
+      const { status, body } = await attachAccountEntitlement(request, env);
+      return corsResponse(Response.json(body, { status }));
     }
 
     if (incoming.pathname !== "/healthz" && !incoming.pathname.startsWith("/api/rooms")) {

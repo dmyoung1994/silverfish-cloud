@@ -1,3 +1,5 @@
+import { verifyFirebaseIdToken } from "./firebaseAuth";
+
 const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 const COMPLETED_PAYMENT_STATUSES = new Set(["paid", "no_payment_required"]);
@@ -106,6 +108,7 @@ async function activateCheckoutEntitlement(event: StripeEvent, env: Env): Promis
   const subscriptionId = expandableId(session.subscription);
   const paymentLinkId = expandableId(session.payment_link);
   const paymentStatus = stringField(session, "payment_status");
+  const email = customerEmail(session);
 
   if (
     stringField(session, "mode") !== "subscription"
@@ -133,13 +136,15 @@ async function activateCheckoutEntitlement(event: StripeEvent, env: Env): Promis
         customer_id,
         subscription_id,
         status,
+        email,
         stripe_event_created,
         updated_at
-      ) VALUES (?, ?, ?, 'active', ?, ?)
+      ) VALUES (?, ?, ?, 'active', ?, ?, ?)
       ON CONFLICT(credential_hash) DO UPDATE SET
         customer_id = excluded.customer_id,
         subscription_id = excluded.subscription_id,
         status = excluded.status,
+        email = excluded.email,
         stripe_event_created = excluded.stripe_event_created,
         updated_at = excluded.updated_at
       WHERE excluded.stripe_event_created >= subscription_entitlements.stripe_event_created
@@ -147,10 +152,84 @@ async function activateCheckoutEntitlement(event: StripeEvent, env: Env): Promis
       credentialHash,
       customerId,
       subscriptionId,
+      email,
       event.created,
       processedAt,
     ),
   ]);
+}
+
+export async function attachAccountEntitlement(
+  request: Request,
+  env: Env,
+): Promise<{ status: number; body: EntitlementStatus | { error: string } }> {
+  const idToken = bearerCredential(request.headers);
+  if (!idToken) return { status: 401, body: { error: "Missing Google sign-in token" } };
+
+  const identity = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID);
+  if (!identity) return { status: 401, body: { error: "Invalid or expired Google sign-in token" } };
+
+  let credential: string | undefined;
+  try {
+    const parsed = await request.json() as { credential?: unknown };
+    credential = typeof parsed.credential === "string" ? parsed.credential : undefined;
+  } catch {
+    credential = undefined;
+  }
+  if (!credential || !ENTITLEMENT_CREDENTIAL_PATTERN.test(credential)) {
+    return { status: 400, body: { error: "Missing device credential" } };
+  }
+
+  const existing = await env.ENTITLEMENTS
+    .prepare(`
+      SELECT customer_id, subscription_id, status
+      FROM subscription_entitlements
+      WHERE email = ? AND status IN ('active', 'trialing')
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `)
+    .bind(identity.email)
+    .first<{ customer_id: string; subscription_id: string; status: string }>();
+
+  if (!existing) {
+    return {
+      status: 404,
+      body: { error: "No active Founding Host subscription found for this Google account" },
+    };
+  }
+
+  const credentialHash = await hashCredential(credential);
+  const now = Math.floor(Date.now() / 1000);
+  await env.ENTITLEMENTS.prepare(`
+    INSERT INTO subscription_entitlements (
+      credential_hash, customer_id, subscription_id, status, email, stripe_event_created, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(credential_hash) DO UPDATE SET
+      customer_id = excluded.customer_id,
+      subscription_id = excluded.subscription_id,
+      status = excluded.status,
+      email = excluded.email,
+      stripe_event_created = excluded.stripe_event_created,
+      updated_at = excluded.updated_at
+  `).bind(
+    credentialHash,
+    existing.customer_id,
+    existing.subscription_id,
+    existing.status,
+    identity.email,
+    now,
+    now,
+  ).run();
+
+  return {
+    status: 200,
+    body: {
+      active: true,
+      plan: "founding_host",
+      maxGuests: positiveInteger(env.PAID_MAX_GUESTS, 8),
+      roomLifetimeSeconds: null,
+    },
+  };
 }
 
 async function updateSubscriptionEntitlement(event: StripeEvent, env: Env): Promise<void> {
@@ -251,6 +330,12 @@ function parseStripeEvent(value: unknown): StripeEvent {
 function expandableId(value: unknown): string | undefined {
   if (typeof value === "string" && value) return value;
   return isRecord(value) ? stringField(value, "id") : undefined;
+}
+
+function customerEmail(session: Record<string, unknown>): string | undefined {
+  if (!isRecord(session.customer_details)) return undefined;
+  const email = stringField(session.customer_details, "email");
+  return email ? email.toLowerCase().trim() : undefined;
 }
 
 function stringField(value: Record<string, unknown>, key: string): string | undefined {

@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Check,
   FileDiff,
+  Github,
   Link2,
   LockKeyhole,
   MessageSquarePlus,
@@ -11,9 +12,11 @@ import {
   Users,
 } from "lucide-react";
 import { SilverfishMark } from "./SilverfishMark";
+import { PLANS } from "./plans";
 import "./landing.css";
 
 const downloadHref = "/downloads/Silverfish-macOS-arm64.dmg";
+const githubHref = "https://github.com/dmyoung1994/silverfish";
 
 const steps = [
   {
@@ -109,7 +112,17 @@ export function LandingPage() {
         <Brand />
         <nav aria-label="Main navigation">
           <a href="#how-it-works">How it works</a>
+          <a href="#plans">Plans</a>
           <a href="#security">Security</a>
+          <a
+            className="icon-nav-button"
+            href={githubHref}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="View source on GitHub"
+          >
+            <Github size={18} />
+          </a>
           <DownloadLink compact />
         </nav>
       </header>
@@ -138,6 +151,30 @@ export function LandingPage() {
               <span>{step.number}</span>
               <h3>{step.title}</h3>
               <p>{step.copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="plans-section" id="plans">
+        <div className="section-heading">
+          <h2>Start free.<br />Upgrade when<br />you need more.</h2>
+          <p>Guests always join for free, straight from a link—no account, no login. Hosts can start free too, or unlock longer rooms with Founding Host.</p>
+        </div>
+        <div className="plans-grid">
+          {Object.values(PLANS).map((plan) => (
+            <article key={plan.id} className={plan.id === "founding_host" ? "plans-card highlighted" : "plans-card"}>
+              <h3>{plan.name}</h3>
+              <div className="plans-price">
+                <span>{plan.priceLabel}</span>
+                {plan.priceSuffix ? <small>{plan.priceSuffix}</small> : null}
+              </div>
+              <p>{plan.tagline}</p>
+              <ul>
+                {plan.features.map((feature) => (
+                  <li key={feature}><Check size={15} /> {feature}</li>
+                ))}
+              </ul>
             </article>
           ))}
         </div>
@@ -186,7 +223,12 @@ export function LandingPage() {
       <footer className="landing-footer">
         <Brand />
         <p>A small creature for shared work around one powerful agent.</p>
-        <div><a href="#security">Security</a><a href="#top">Back to top</a></div>
+        <div>
+          <a href="#plans">Plans</a>
+          <a href="#security">Security</a>
+          <a href={githubHref} target="_blank" rel="noreferrer">GitHub</a>
+          <a href="#top">Back to top</a>
+        </div>
       </footer>
     </main>
   );

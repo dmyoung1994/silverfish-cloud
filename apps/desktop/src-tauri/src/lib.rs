@@ -1,10 +1,12 @@
 mod audit;
 mod codex;
+mod oauth;
 mod recovery;
 
 use std::sync::Arc;
 
 use codex::{CodexClient, CodexStatus};
+use oauth::OAuthLoopbackState;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
@@ -12,6 +14,7 @@ use tokio::sync::Mutex;
 #[derive(Default)]
 struct RuntimeState {
     codex: Mutex<Option<Arc<CodexClient>>>,
+    oauth: Arc<OAuthLoopbackState>,
 }
 
 #[tauri::command]
@@ -203,6 +206,20 @@ async fn append_audit_event(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn start_google_oauth_loopback(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<u16, String> {
+    oauth::start(app, state.oauth.clone()).await
+}
+
+#[tauri::command]
+async fn cancel_google_oauth_loopback(state: State<'_, RuntimeState>) -> Result<(), String> {
+    oauth::cancel(state.oauth.clone()).await;
+    Ok(())
+}
+
 async fn client(state: &State<'_, RuntimeState>) -> Result<Arc<CodexClient>, String> {
     state
         .codex
@@ -216,6 +233,7 @@ async fn client(state: &State<'_, RuntimeState>) -> Result<Arc<CodexClient>, Str
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -238,6 +256,8 @@ pub fn run() {
             create_recovery_point,
             restore_recovery_point,
             append_audit_event,
+            start_google_oauth_loopback,
+            cancel_google_oauth_loopback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Silverfish");
