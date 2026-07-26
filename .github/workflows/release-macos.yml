@@ -22,6 +22,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Write the App Store Connect API key to disk
+        run: |
+          set -euo pipefail
+          echo "${APPLE_API_KEY_CONTENT}" | base64 --decode > "${RUNNER_TEMP}/apple_api_key.p8"
+          echo "APPLE_API_KEY_PATH=${RUNNER_TEMP}/apple_api_key.p8" >> "$GITHUB_ENV"
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+
       - name: Build, sign, and notarize
         uses: tauri-apps/tauri-action@v0
         env:
@@ -30,10 +38,10 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
           VITE_SILVERFISH_MANAGED_SERVICE: "true"
           VITE_SILVERFISH_RELAY_URL: ${{ vars.VITE_SILVERFISH_RELAY_URL }}
           VITE_SILVERFISH_SUBSCRIBE_URL: ${{ vars.VITE_SILVERFISH_SUBSCRIBE_URL }}
