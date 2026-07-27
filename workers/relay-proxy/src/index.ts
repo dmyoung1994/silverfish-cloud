@@ -5,16 +5,25 @@ import {
   hasEntitlementCredential,
   readEntitlementStatus,
 } from "./billing";
+import { conversionRateLimited, issueGuestCampaign, recordConversionEvent } from "./conversions";
 
 const STRIPE_WEBHOOK_PATH = "/api/stripe/webhook";
 const ENTITLEMENT_STATUS_PATH = "/api/billing/status";
 const ATTACH_ACCOUNT_PATH = "/api/billing/attach-account";
+const CONVERSION_CAMPAIGNS_PATH = "/api/conversions/campaigns";
+const CONVERSION_EVENTS_PATH = "/api/conversions/events";
 const MANAGED_PLAN_HEADER = "x-silverfish-managed-plan";
 const PROXY_SECRET_HEADER = "x-silverfish-proxy-secret";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const incoming = new URL(request.url);
+    if (incoming.pathname === "/updates/latest.json") {
+      const response = await env.ASSETS.fetch(request);
+      const fresh = new Response(response.body, response);
+      fresh.headers.set("cache-control", "no-store");
+      return fresh;
+    }
     if (incoming.pathname === STRIPE_WEBHOOK_PATH) {
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       return handleStripeWebhook(request, env);
@@ -31,6 +40,20 @@ export default {
       if (request.method !== "POST") return corsResponse(new Response("Method not allowed", { status: 405 }));
       const { status, body } = await attachAccountEntitlement(request, env);
       return corsResponse(Response.json(body, { status }));
+    }
+
+    if (incoming.pathname === CONVERSION_CAMPAIGNS_PATH) {
+      if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
+      if (request.method !== "POST") return corsResponse(new Response("Method not allowed", { status: 405 }));
+      if (conversionRateLimited(request)) return corsResponse(Response.json({ error: "Too many conversion requests" }, { status: 429 }));
+      return corsResponse(await issueGuestCampaign(request, env));
+    }
+
+    if (incoming.pathname === CONVERSION_EVENTS_PATH) {
+      if (request.method === "OPTIONS") return corsResponse(new Response(null, { status: 204 }));
+      if (request.method !== "POST") return corsResponse(new Response("Method not allowed", { status: 405 }));
+      if (conversionRateLimited(request)) return corsResponse(Response.json({ error: "Too many conversion requests" }, { status: 429 }));
+      return corsResponse(await recordConversionEvent(request, env));
     }
 
     if (incoming.pathname !== "/healthz" && !incoming.pathname.startsWith("/api/rooms")) {

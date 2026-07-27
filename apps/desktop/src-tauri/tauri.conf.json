@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Silverfish",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "app.silverfish.collaborative",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["dmg", "app"],
     "icon": [
       "icons/32x32.png",
@@ -37,6 +38,17 @@
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,
       "entitlements": "entitlements.plist"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["silverfish"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBQTUzMUZEOUE0MTUxNzgKUldSNFVVR2EvVEdsR3EyQkVHdWZtN0I3WUNKbzhLN2k5M0puV1JVOG1hTnd6Qkd6cW8yWXF5QloK",
+      "endpoints": ["https://try.silverfish-app.workers.dev/updates/latest.json"]
     }
   }
 }

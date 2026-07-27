@@ -8,8 +8,9 @@ signing_dir=${SILVERFISH_SIGNING_DIR:-"$HOME/.silverfish-signing"}
 secret_file="$signing_dir/github-secrets.txt"
 p12_file="$signing_dir/developerID_application.p12"
 api_key_file="$signing_dir/AuthKey_6KXLPBXVFV.p8"
+updater_key_file="$signing_dir/tauri-updater.key"
 
-for required in "$secret_file" "$p12_file" "$api_key_file"; do
+for required in "$secret_file" "$p12_file" "$api_key_file" "$updater_key_file"; do
   [[ -f "$required" ]] || { echo "Missing release material: $required" >&2; exit 1; }
 done
 
@@ -27,6 +28,7 @@ APPLE_TEAM_ID=$(read_secret APPLE_TEAM_ID)
 APPLE_API_KEY=$(read_secret APPLE_API_KEY)
 APPLE_API_ISSUER=$(read_secret APPLE_API_ISSUER)
 KEYCHAIN_PASSWORD=$(read_secret KEYCHAIN_PASSWORD)
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(security find-generic-password -a "$USER" -s "silverfish-tauri-updater-key" -w)
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/silverfish-release.XXXXXX")
 keychain="$temp_dir/release.keychain-db"
@@ -59,6 +61,8 @@ security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN
 export KEYCHAIN_PASSWORD
 export APPLE_SIGNING_IDENTITY
 export APPLE_TEAM_ID
+export TAURI_SIGNING_PRIVATE_KEY="$updater_key_file"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 export VITE_SILVERFISH_MANAGED_SERVICE=true
 export VITE_SILVERFISH_RELAY_URL=$(gh variable get VITE_SILVERFISH_RELAY_URL --repo dmyoung1994/silverfish-cloud)
 export VITE_SILVERFISH_SUBSCRIBE_URL=$(gh variable get VITE_SILVERFISH_SUBSCRIBE_URL --repo dmyoung1994/silverfish-cloud)
@@ -72,6 +76,8 @@ security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
 npm --workspace apps/desktop run tauri -- build --target aarch64-apple-darwin
 dmg=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)
 [[ -n "$dmg" ]] || { echo "Tauri did not create a DMG" >&2; exit 1; }
+updater_bundle=$(find target/aarch64-apple-darwin/release/bundle/macos -name '*.app.tar.gz' -print -quit)
+[[ -n "$updater_bundle" && -f "$updater_bundle.sig" ]] || { echo "Tauri did not create a signed updater bundle" >&2; exit 1; }
 
 codesign --verify --deep --strict --verbose=2 "$dmg"
 xcrun notarytool submit "$dmg" --key "$api_key_file" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 45m
@@ -79,9 +85,19 @@ xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature -vv "$dmg"
 
-mkdir -p apps/desktop/public/downloads
+mkdir -p apps/desktop/public/downloads apps/desktop/public/updates
 cp "$dmg" apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
+release_version=$(node -p 'require("./apps/desktop/package.json").version')
+node scripts/publish-updater-release.mjs \
+  --version "$release_version" \
+  --artifact "$updater_bundle" \
+  --signature "$updater_bundle.sig" \
+  --base-url "${SILVERFISH_UPDATE_BASE_URL:-https://try.silverfish-app.workers.dev}" \
+  --notes "Guest-to-host conversion funnel and automatic in-app updates." \
+  --output-dir apps/desktop/public/updates
 shasum -a 256 apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
 npm run build
+npx wrangler d1 migrations apply silverfish-entitlements --remote --config workers/relay-proxy/wrangler.jsonc
 npm run deploy:worker
 curl --fail --head "${SILVERFISH_DOWNLOAD_URL:-https://try.silverfish-app.workers.dev/downloads/Silverfish-macOS-arm64.dmg}"
+curl --fail --header 'cache-control: no-cache' "${SILVERFISH_UPDATE_BASE_URL:-https://try.silverfish-app.workers.dev}/updates/latest.json"

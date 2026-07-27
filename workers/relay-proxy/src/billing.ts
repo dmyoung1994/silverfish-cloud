@@ -1,4 +1,5 @@
 import { verifyFirebaseIdToken } from "./firebaseAuth";
+import { recordSubscriptionConversion } from "./conversions";
 
 const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
@@ -157,6 +158,7 @@ async function activateCheckoutEntitlement(event: StripeEvent, env: Env): Promis
       processedAt,
     ),
   ]);
+  await recordSubscriptionConversion(credentialHash, env);
 }
 
 export async function attachAccountEntitlement(

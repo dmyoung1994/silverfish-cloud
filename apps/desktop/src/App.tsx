@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { LandingPage } from "./LandingPage";
+import { HostYourOwnRoomPage } from "./HostYourOwnRoomPage";
 import { SilverfishMark } from "./SilverfishMark";
 import {
   attachHostEntitlement,
@@ -53,6 +54,8 @@ import type {
   TimelineItem,
 } from "./protocol";
 import { PLANS } from "./plans";
+import { getHostCampaign, recordConversionEvent, saveHostCampaign } from "./conversion";
+import { checkForDesktopUpdate, installDesktopUpdate, type DesktopUpdate } from "./desktop-updater";
 import { HostRoomController, workspaceName } from "./room-controller";
 import {
   createRelayInvite,
@@ -103,6 +106,9 @@ export default function App() {
   }
   if (!isTauriApp() && window.location.pathname === "/billing/success") {
     return <BillingSuccess />;
+  }
+  if (!isTauriApp() && window.location.pathname === "/host-your-own") {
+    return <HostYourOwnRoomPage />;
   }
   const guestCredentials = useMemo(parseGuestCredentials, []);
   if (guestCredentials) return <GuestApp credentials={guestCredentials} />;
@@ -162,10 +168,48 @@ function HostApp() {
     key: Uint8Array<ArrayBuffer>;
   }>();
   const [error, setError] = useState("");
+  const [hostCampaign, setHostCampaign] = useState(() => getHostCampaign());
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdate | null>(null);
+  const [updateStatus, setUpdateStatus] = useState("");
 
   useEffect(() => {
     void codex.status().then(setStatus).catch(() => setError("Open this page in the Silverfish desktop app to host a room."));
   }, []);
+
+  useEffect(() => {
+    if (!isManagedService) return;
+    let current = true;
+    void checkForDesktopUpdate().then((update) => {
+      if (current) setDesktopUpdate(update);
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, []);
+
+  async function applyDesktopUpdate() {
+    if (!desktopUpdate || updateStatus) return;
+    try {
+      await installDesktopUpdate(desktopUpdate, setUpdateStatus);
+    } catch {
+      setUpdateStatus("Could not install the update. Please try again shortly.");
+    }
+  }
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void codex.takeHostCampaign().then((campaign) => {
+      if (campaign && saveHostCampaign(campaign)) setHostCampaign(campaign);
+    });
+    void codex.onHostCampaign((campaign) => {
+      if (saveHostCampaign(campaign)) setHostCampaign(campaign);
+    }).then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    if (!isManagedService || !hostCampaign) return;
+    recordConversionEvent(relayUrl, hostCampaign, "app_activated", entitlementCredential);
+    recordConversionEvent(relayUrl, hostCampaign, "host_setup_opened", entitlementCredential);
+  }, [entitlementCredential, hostCampaign, relayUrl]);
 
   useEffect(() => {
     if (!AGENT_MODELS[agent].some((option) => option.value === model)) setModel("default");
@@ -240,6 +284,7 @@ function HostApp() {
       await codex.connect(agent, model, cwd);
       const thread = (await codex.startThread(cwd)).thread;
       const room = await createRelayRoom(relayUrl, credential);
+      if (isManagedService) recordConversionEvent(relayUrl, hostCampaign, "room_started", entitlementCredential);
       const key = generateRoomKey();
       const socket = openRelaySocket(socketUrl(relayUrl, room.roomId, "host"), room.hostToken);
       const nextController = new HostRoomController(
@@ -397,6 +442,7 @@ function HostApp() {
         onChoosePaid={() => connectAndHostRoom(entitlementCredential)}
         onRefreshSubscription={refreshSubscription}
         onGoogleLogin={loginWithGoogleAccount}
+        onCheckout={() => recordConversionEvent(relayUrl, hostCampaign, "checkout_opened", entitlementCredential)}
         error={error}
       />
     );
@@ -425,6 +471,8 @@ function HostApp() {
             <h2>Connect the host</h2>
             <p>Choose a local coding agent and model. Silverfish keeps its login and workspace on this Mac.</p>
           </div>
+          {hostCampaign ? <div className="host-campaign-banner"><Sparkles size={16} /><span>Ready to host your first room. Choose a workspace, then invite collaborators.</span></div> : null}
+          {desktopUpdate ? <div className="desktop-update-banner"><Sparkles size={16} /><div><strong>Silverfish {desktopUpdate.version} is ready</strong><span>{updateStatus || "Install the verified update and restart before starting a room."}</span></div><button type="button" onClick={() => void applyDesktopUpdate()} disabled={Boolean(updateStatus)}>{updateStatus || "Update & restart"}</button></div> : null}
           <label>
             <span>Local agent</span>
             <select value={agent} onChange={(event) => setAgent(event.target.value as AgentKind)} disabled={starting}>
@@ -592,6 +640,7 @@ function PlanChooser({
   onChoosePaid,
   onRefreshSubscription,
   onGoogleLogin,
+  onCheckout,
   error,
 }: {
   subscribeUrl?: string;
@@ -604,6 +653,7 @@ function PlanChooser({
   onChoosePaid: () => Promise<void>;
   onRefreshSubscription: () => Promise<void>;
   onGoogleLogin: () => Promise<void>;
+  onCheckout?: () => void;
   error?: string;
 }) {
   const [pendingPlan, setPendingPlan] = useState<"free" | "founding_host">();
@@ -684,7 +734,7 @@ function PlanChooser({
                 {startingPaid ? "Starting session…" : "Start Founding Host session"}
               </button>
             ) : subscribeUrl ? (
-              <a className="plan-cta founding-cta" href={subscribeUrl} target="_blank" rel="noreferrer">
+              <a className="plan-cta founding-cta" href={subscribeUrl} target="_blank" rel="noreferrer" onClick={onCheckout}>
                 Choose Founding Host
                 <ExternalLink size={17} />
               </a>
@@ -768,6 +818,7 @@ function GuestApp({ credentials }: { credentials: GuestCredentials }) {
   const [socket, setSocket] = useState<WebSocket>();
   const [connectionId, setConnectionId] = useState("");
   const [error, setError] = useState("");
+  const [disconnected, setDisconnected] = useState(false);
   const lastSequence = useRef(0);
 
   async function send(intent: ClientIntent) {
@@ -778,6 +829,7 @@ function GuestApp({ credentials }: { credentials: GuestCredentials }) {
 
   async function join() {
     setError("");
+    setDisconnected(false);
     try {
       const nextSocket = openRelaySocket(
         socketUrl(credentials.relayUrl, credentials.roomId, "guest", credentials.inviteId),
@@ -786,7 +838,12 @@ function GuestApp({ credentials }: { credentials: GuestCredentials }) {
       nextSocket.addEventListener("message", (event) => {
         void handleGuestRelay(parseRelayMessage(event), credentials, setSnapshot, setConnectionId, setError, lastSequence);
       });
-      nextSocket.addEventListener("close", () => setError("Disconnected from the room"));
+      nextSocket.addEventListener("close", () => {
+        setSocket(undefined);
+        setConnectionId("");
+        setDisconnected(true);
+        setError("Disconnected from the room");
+      });
       await waitForSocket(nextSocket);
       setSocket(nextSocket);
       const envelope = await encryptJson(credentials.roomId, credentials.key, {
@@ -802,6 +859,10 @@ function GuestApp({ credentials }: { credentials: GuestCredentials }) {
   useEffect(() => () => {
     socket?.close();
   }, [socket]);
+
+  if (!socket && disconnected) {
+    return <GuestDisconnected error={error} />;
+  }
 
   if (!socket) {
     return (
@@ -840,7 +901,22 @@ function GuestApp({ credentials }: { credentials: GuestCredentials }) {
     pause: (paused) => send({ type: "setQueuePaused", paused }),
     decide: (approvalId, decision) => send({ type: "approvalDecision", approvalId, decision }),
   };
-  return <RoomShell snapshot={snapshot} actions={actions} isHost={false} connectionLabel={`${name} · ${connectionId.slice(0, 5)}`} error={error} />;
+  return <RoomShell snapshot={snapshot} actions={actions} isHost={false} connectionLabel={`${name} · ${connectionId.slice(0, 5)}`} error={error} guestHostHref="/host-your-own?source=guest_room" />;
+}
+
+function GuestDisconnected({ error }: { error: string }) {
+  return (
+    <main className="join-shell">
+      <div className="join-card guest-disconnected-card">
+        <div className="brand-mark"><SilverfishMark size={27} /></div>
+        <p className="eyebrow">SESSION ENDED</p>
+        <h1>Host the next room.</h1>
+        <p>{error || "This room is no longer available."} Start your own private, shared local-agent session instead.</p>
+        <a className="primary guest-host-cta" href="/host-your-own?source=guest_room" target="_blank" rel="noreferrer"><MonitorDown size={18} /> Get Silverfish for macOS</a>
+        <div className="guest-host-detail">Start free with 1 guest and 60-minute rooms. Founding Host adds up to 8 guests and no room limit.</div>
+      </div>
+    </main>
+  );
 }
 
 async function handleGuestRelay(
@@ -895,7 +971,7 @@ function applyHostEvent(current: RoomSnapshot, event: HostEvent, sequence: numbe
   return current;
 }
 
-function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, agent, model, onSwitchAgent, error }: {
+function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, agent, model, onSwitchAgent, guestHostHref, error }: {
   snapshot: RoomSnapshot;
   actions: RoomActions;
   isHost: boolean;
@@ -912,6 +988,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
   agent?: AgentKind;
   model?: AgentModel;
   onSwitchAgent?: (agent: AgentKind, model: AgentModel) => Promise<void>;
+  guestHostHref?: string;
   error?: string;
 }) {
   const [text, setText] = useState("");
@@ -974,6 +1051,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
             {subscribeHref ? <a href={subscribeHref} target="_blank" rel="noreferrer">Upgrade</a> : null}
           </div>
         ) : null}
+        {!isHost && guestHostHref ? <div className="guest-host-mobile"><span>Ready to lead the next session?</span><a href={guestHostHref} target="_blank" rel="noreferrer">Host your own room <ExternalLink size={13} /></a></div> : null}
         {error && <div className="room-error">{error}</div>}
       </div>
       <div className="room-grid">
@@ -1028,6 +1106,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
               </div>
             ))}
           </SidebarSection>}
+          {!isHost && guestHostHref ? <div className="guest-host-card"><MonitorDown size={18} /><div><strong>Host your own room</strong><span>Start free, then unlock longer rooms when your team needs them.</span><a href={guestHostHref} target="_blank" rel="noreferrer">Get Silverfish for macOS <ExternalLink size={13} /></a></div></div> : null}
           <div className="safety-card"><ShieldCheck size={17} /><div><strong>Protected session</strong><span>Sandboxed · approval gated · E2E encrypted</span></div></div>
         </aside>
       </div>

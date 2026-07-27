@@ -70,6 +70,9 @@ export const codex = {
   createRecoveryPoint: (workspace: string) => invoke<RecoveryPoint>("create_recovery_point", { workspace }),
   restoreRecoveryPoint: (workspace: string, checkpointId: string) => invoke<RecoveryPoint>("restore_recovery_point", { workspace, checkpointId }),
   appendAuditEvent: (roomId: string, sequence: number, event: unknown) => invoke<void>("append_audit_event", { roomId, sequence, event }),
+  takeHostCampaign: () => invoke<string | null>("take_host_campaign"),
+  onHostCampaign: (callback: (campaign: string) => void): Promise<UnlistenFn> =>
+    listen<string>("host-campaign-opened", ({ payload }) => callback(payload)),
   onEvent: (callback: (event: Record<string, unknown>) => void): Promise<UnlistenFn> =>
     listen<Record<string, unknown>>("codex-event", ({ payload }) => callback(payload)),
 };

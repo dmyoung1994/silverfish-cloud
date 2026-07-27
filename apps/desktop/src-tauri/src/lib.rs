@@ -4,19 +4,21 @@ mod codex;
 mod google_auth;
 mod recovery;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use claude::{ClaudeClient, ClaudeStatus};
 use codex::{CodexClient, CodexStatus};
 use google_auth::{GoogleAuthState, GoogleLoginResult};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tokio::sync::Mutex;
 
 #[derive(Default)]
 struct RuntimeState {
     agent: Mutex<Option<ActiveAgent>>,
     google_auth: Arc<GoogleAuthState>,
+    host_campaign: Arc<StdMutex<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -260,6 +262,11 @@ async fn cancel_google_login(state: State<'_, RuntimeState>) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+fn take_host_campaign(state: State<'_, RuntimeState>) -> Option<String> {
+    state.host_campaign.lock().ok()?.take()
+}
+
 async fn client(state: &State<'_, RuntimeState>) -> Result<ActiveAgent, String> {
     state
         .agent
@@ -273,11 +280,27 @@ async fn client(state: &State<'_, RuntimeState>) -> Result<ActiveAgent, String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(RuntimeState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             app.manage(handle);
+            let campaign_state = app.state::<RuntimeState>().host_campaign.clone();
+            if let Some(urls) = app.deep_link().get_current()? {
+                store_host_campaign(&campaign_state, &urls);
+            }
+            let event_app = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                if let Some(campaign) = campaign_from_urls(&event.urls()) {
+                    if let Ok(mut stored) = campaign_state.lock() {
+                        *stored = Some(campaign.clone());
+                    }
+                    let _ = event_app.emit("host-campaign-opened", campaign);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -300,7 +323,33 @@ pub fn run() {
             append_audit_event,
             login_with_google,
             cancel_google_login,
+            take_host_campaign,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Silverfish");
+}
+
+fn store_host_campaign(state: &Arc<StdMutex<Option<String>>>, urls: &[url::Url]) {
+    if let Some(campaign) = campaign_from_urls(urls) {
+        if let Ok(mut stored) = state.lock() {
+            *stored = Some(campaign);
+        }
+    }
+}
+
+fn campaign_from_urls(urls: &[url::Url]) -> Option<String> {
+    urls.iter().find_map(|url| {
+        if url.scheme() != "silverfish" || url.host_str() != Some("host-your-own") {
+            return None;
+        }
+        url.query_pairs().find_map(|(key, value)| {
+            let campaign = value.into_owned();
+            (key == "campaign" && valid_campaign(&campaign)).then_some(campaign)
+        })
+    })
+}
+
+fn valid_campaign(value: &str) -> bool {
+    (32..=128).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
