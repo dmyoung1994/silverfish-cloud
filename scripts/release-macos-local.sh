@@ -10,6 +10,16 @@ p12_file="$signing_dir/developerID_application.p12"
 api_key_file="$signing_dir/AuthKey_6KXLPBXVFV.p8"
 updater_key_file="$signing_dir/tauri-updater.key"
 
+# The repository's .env can hold a narrow automation token. Run deployment
+# commands from outside the repository so Wrangler uses the interactive OAuth
+# session with D1 and Workers write access instead.
+wrangler_oauth() {
+  (
+    cd "${TMPDIR:-/tmp}"
+    env -u CLOUDFLARE_API_TOKEN "$repo_root/node_modules/.bin/wrangler" "$@"
+  )
+}
+
 for required in "$secret_file" "$p12_file" "$api_key_file" "$updater_key_file"; do
   [[ -f "$required" ]] || { echo "Missing release material: $required" >&2; exit 1; }
 done
@@ -107,7 +117,7 @@ node scripts/publish-updater-release.mjs \
 gh release upload "$release_tag" apps/desktop/public/updates/latest.json --repo dmyoung1994/silverfish-cloud --clobber
 shasum -a 256 "$dmg"
 npm run build
-npx wrangler d1 migrations apply silverfish-entitlements --remote --config workers/relay-proxy/wrangler.jsonc
-npm run deploy:worker
+wrangler_oauth d1 migrations apply silverfish-entitlements --remote --config "$repo_root/workers/relay-proxy/wrangler.jsonc"
+wrangler_oauth deploy --config "$repo_root/workers/relay-proxy/wrangler.jsonc"
 curl --fail --head "${SILVERFISH_DOWNLOAD_URL:-https://try.silverfish-app.workers.dev/downloads/Silverfish-macOS-arm64.dmg}"
 curl --fail --header 'cache-control: no-cache' "${SILVERFISH_UPDATE_BASE_URL:-https://try.silverfish-app.workers.dev}/updates/latest.json"
