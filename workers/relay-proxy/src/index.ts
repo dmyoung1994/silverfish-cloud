@@ -14,6 +14,8 @@ const CONVERSION_CAMPAIGNS_PATH = "/api/conversions/campaigns";
 const CONVERSION_EVENTS_PATH = "/api/conversions/events";
 const MANAGED_PLAN_HEADER = "x-silverfish-managed-plan";
 const PROXY_SECRET_HEADER = "x-silverfish-proxy-secret";
+const MACOS_DOWNLOAD_PATH = "/downloads/Silverfish-macOS-arm64.dmg";
+const MACOS_DOWNLOAD_URL = "https://github.com/dmyoung1994/silverfish-cloud/releases/download/v0.3.0/Silverfish_0.3.0_aarch64.dmg";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -23,6 +25,9 @@ export default {
       const fresh = new Response(response.body, response);
       fresh.headers.set("cache-control", "no-store");
       return fresh;
+    }
+    if (incoming.pathname === MACOS_DOWNLOAD_PATH) {
+      return Response.redirect(MACOS_DOWNLOAD_URL, 302);
     }
     if (incoming.pathname === STRIPE_WEBHOOK_PATH) {
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });

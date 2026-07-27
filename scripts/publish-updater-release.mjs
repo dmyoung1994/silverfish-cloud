@@ -9,7 +9,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   args.set(key.slice(2), value);
 }
 
-const required = ["version", "artifact", "signature", "base-url", "notes", "output-dir"];
+const required = ["version", "artifact", "signature", "notes", "output-dir"];
 for (const key of required) if (!args.has(key)) throw new Error(`Missing --${key}`);
 
 const artifact = args.get("artifact");
@@ -18,9 +18,17 @@ if (!signature) throw new Error("Updater signature is empty");
 
 const outputDir = args.get("output-dir");
 const updateName = "Silverfish-macOS-arm64.app.tar.gz";
+const artifactUrl = args.has("artifact-url")
+  ? args.get("artifact-url")
+  : `${args.get("base-url")?.replace(/\/$/, "")}/updates/${updateName}`;
+if (!artifactUrl || !URL.canParse(artifactUrl)) {
+  throw new Error("Provide --artifact-url or a valid --base-url");
+}
 mkdirSync(outputDir, { recursive: true });
-copyFileSync(artifact, join(outputDir, updateName));
-copyFileSync(args.get("signature"), join(outputDir, `${updateName}.sig`));
+if (!args.has("artifact-url")) {
+  copyFileSync(artifact, join(outputDir, updateName));
+  copyFileSync(args.get("signature"), join(outputDir, `${updateName}.sig`));
+}
 
 const manifest = {
   version: args.get("version"),
@@ -28,7 +36,7 @@ const manifest = {
   pub_date: new Date().toISOString(),
   platforms: {
     "darwin-aarch64": {
-      url: `${args.get("base-url").replace(/\/$/, "")}/updates/${updateName}`,
+      url: artifactUrl,
       signature,
     },
   },

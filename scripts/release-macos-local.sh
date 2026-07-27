@@ -85,17 +85,16 @@ xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature -vv "$dmg"
 
-mkdir -p apps/desktop/public/downloads apps/desktop/public/updates
-cp "$dmg" apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
+mkdir -p apps/desktop/public/updates
 release_version=$(node -p 'require("./apps/desktop/package.json").version')
 node scripts/publish-updater-release.mjs \
   --version "$release_version" \
   --artifact "$updater_bundle" \
   --signature "$updater_bundle.sig" \
-  --base-url "${SILVERFISH_UPDATE_BASE_URL:-https://try.silverfish-app.workers.dev}" \
+  --artifact-url "${SILVERFISH_UPDATE_ARTIFACT_URL:-https://github.com/dmyoung1994/silverfish-cloud/releases/download/v${release_version}/Silverfish.app.tar.gz}" \
   --notes "Guest-to-host conversion funnel and automatic in-app updates." \
   --output-dir apps/desktop/public/updates
-shasum -a 256 apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
+shasum -a 256 "$dmg"
 npm run build
 npx wrangler d1 migrations apply silverfish-entitlements --remote --config workers/relay-proxy/wrangler.jsonc
 npm run deploy:worker
