@@ -1,10 +1,12 @@
 mod audit;
+mod claude;
 mod codex;
 mod google_auth;
 mod recovery;
 
 use std::sync::Arc;
 
+use claude::{ClaudeClient, ClaudeStatus};
 use codex::{CodexClient, CodexStatus};
 use google_auth::{GoogleAuthState, GoogleLoginResult};
 use serde_json::Value;
@@ -13,8 +15,29 @@ use tokio::sync::Mutex;
 
 #[derive(Default)]
 struct RuntimeState {
-    codex: Mutex<Option<Arc<CodexClient>>>,
+    agent: Mutex<Option<ActiveAgent>>,
     google_auth: Arc<GoogleAuthState>,
+}
+
+#[derive(Clone)]
+enum ActiveAgent {
+    Codex(Arc<CodexClient>),
+    Claude(Arc<ClaudeClient>),
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStatus {
+    codex: CodexStatus,
+    claude: ClaudeStatus,
+}
+
+#[tauri::command]
+async fn agent_status() -> AgentStatus {
+    AgentStatus {
+        codex: codex::detect_status().await,
+        claude: claude::detect_status().await,
+    }
 }
 
 #[tauri::command]
@@ -28,19 +51,35 @@ async fn install_optional_dependency(dependency: String) -> Result<CodexStatus, 
 }
 
 #[tauri::command]
-async fn connect_codex(app: AppHandle, state: State<'_, RuntimeState>) -> Result<(), String> {
-    let client = CodexClient::spawn()
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut events = client.subscribe();
+async fn connect_agent(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    agent: String,
+    model: Option<String>,
+    cwd: String,
+) -> Result<(), String> {
+    let client = match agent.as_str() {
+        "codex" => ActiveAgent::Codex(CodexClient::spawn(model).await.map_err(|error| error.to_string())?),
+        "claude" => ActiveAgent::Claude(ClaudeClient::new(cwd, model)),
+        _ => return Err("Unknown local agent".into()),
+    };
+    let mut events = match &client {
+        ActiveAgent::Codex(client) => client.subscribe(),
+        ActiveAgent::Claude(client) => client.subscribe(),
+    };
     let event_app = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Ok(event) = events.recv().await {
             let _ = event_app.emit("codex-event", event);
         }
     });
-    *state.codex.lock().await = Some(client);
+    *state.agent.lock().await = Some(client);
     Ok(())
+}
+
+#[tauri::command]
+async fn connect_codex(app: AppHandle, state: State<'_, RuntimeState>) -> Result<(), String> {
+    connect_agent(app, state, "codex".into(), None, String::new()).await
 }
 
 #[tauri::command]
@@ -48,29 +87,26 @@ async fn list_threads(
     cwd: Option<String>,
     state: State<'_, RuntimeState>,
 ) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .list_threads(cwd)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.list_threads(cwd).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(_) => Ok(serde_json::json!({ "data": [] })),
+    }
 }
 
 #[tauri::command]
 async fn read_thread(thread_id: String, state: State<'_, RuntimeState>) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .read_thread(&thread_id)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.read_thread(&thread_id).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(_) => Err("Claude Code sessions are local to this room".into()),
+    }
 }
 
 #[tauri::command]
 async fn start_thread(cwd: String, state: State<'_, RuntimeState>) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .start_thread(&cwd)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.start_thread(&cwd).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(_) => Ok(serde_json::json!({ "thread": { "id": uuid::Uuid::new_v4().to_string(), "preview": "Claude Code room", "cwd": cwd, "updatedAt": 0 } })),
+    }
 }
 
 #[tauri::command]
@@ -79,11 +115,10 @@ async fn resume_thread(
     cwd: String,
     state: State<'_, RuntimeState>,
 ) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .resume_thread(&thread_id, &cwd)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.resume_thread(&thread_id, &cwd).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(_) => Err("Claude Code room sessions cannot be resumed yet".into()),
+    }
 }
 
 #[tauri::command]
@@ -92,11 +127,10 @@ async fn start_turn(
     text: String,
     state: State<'_, RuntimeState>,
 ) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .start_turn(&thread_id, &text)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.start_turn(&thread_id, &text).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(client) => client.start_turn(&text).await.map(|_| serde_json::json!({})),
+    }
 }
 
 #[tauri::command]
@@ -106,11 +140,10 @@ async fn steer_turn(
     text: String,
     state: State<'_, RuntimeState>,
 ) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .steer(&thread_id, &turn_id, &text)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.steer(&thread_id, &turn_id, &text).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(_) => Err("Claude Code does not support in-turn steering in this release".into()),
+    }
 }
 
 #[tauri::command]
@@ -119,11 +152,10 @@ async fn interrupt_turn(
     turn_id: String,
     state: State<'_, RuntimeState>,
 ) -> Result<Value, String> {
-    client(&state)
-        .await?
-        .interrupt(&thread_id, &turn_id)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.interrupt(&thread_id, &turn_id).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(client) => client.interrupt().await.map(|_| serde_json::json!({})),
+    }
 }
 
 #[tauri::command]
@@ -132,11 +164,10 @@ async fn resolve_approval(
     decision: String,
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
-    client(&state)
-        .await?
-        .resolve_approval(request_id, &decision)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.resolve_approval(request_id, &decision).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(client) => client.resolve_approval(request_id, &decision).await,
+    }
 }
 
 #[tauri::command]
@@ -144,11 +175,10 @@ async fn deny_server_request(
     request_id: Value,
     state: State<'_, RuntimeState>,
 ) -> Result<(), String> {
-    client(&state)
-        .await?
-        .deny_server_request(request_id)
-        .await
-        .map_err(|error| error.to_string())
+    match client(&state).await? {
+        ActiveAgent::Codex(client) => client.deny_server_request(request_id).await.map_err(|error| error.to_string()),
+        ActiveAgent::Claude(client) => client.resolve_approval(request_id, "decline").await,
+    }
 }
 
 #[tauri::command]
@@ -230,13 +260,13 @@ async fn cancel_google_login(state: State<'_, RuntimeState>) -> Result<(), Strin
     Ok(())
 }
 
-async fn client(state: &State<'_, RuntimeState>) -> Result<Arc<CodexClient>, String> {
+async fn client(state: &State<'_, RuntimeState>) -> Result<ActiveAgent, String> {
     state
-        .codex
+        .agent
         .lock()
         .await
         .clone()
-        .ok_or_else(|| "Codex is not connected".into())
+        .ok_or_else(|| "No local agent is connected".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -251,8 +281,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_status,
             codex_status,
             install_optional_dependency,
+            connect_agent,
             connect_codex,
             list_threads,
             read_thread,

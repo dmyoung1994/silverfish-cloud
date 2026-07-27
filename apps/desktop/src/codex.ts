@@ -10,6 +10,33 @@ export interface CodexStatus {
   dcgHookActive: boolean;
 }
 
+export type AgentKind = "codex" | "claude";
+export type AgentModel = "default" | "gpt-5.6-terra" | "gpt-5.6-sol" | "opus" | "sonnet";
+
+export interface ClaudeStatus {
+  installed: boolean;
+  version?: string;
+  approvalMediated: boolean;
+}
+
+export interface AgentStatus {
+  codex: CodexStatus;
+  claude: ClaudeStatus;
+}
+
+export const AGENT_MODELS: Record<AgentKind, ReadonlyArray<{ value: AgentModel; label: string }>> = {
+  codex: [
+    { value: "default", label: "Default" },
+    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+  ],
+  claude: [
+    { value: "default", label: "Default" },
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+  ],
+};
+
 export type OptionalDependency = "dcg";
 
 export interface CodexThread {
@@ -29,9 +56,9 @@ export interface RecoveryPoint {
 }
 
 export const codex = {
-  status: () => invoke<CodexStatus>("codex_status"),
+  status: () => invoke<AgentStatus>("agent_status"),
   installOptionalDependency: (dependency: OptionalDependency) => invoke<CodexStatus>("install_optional_dependency", { dependency }),
-  connect: () => invoke<void>("connect_codex"),
+  connect: (agent: AgentKind, model: AgentModel, cwd: string) => invoke<void>("connect_agent", { agent, model, cwd }),
   listThreads: (cwd?: string) => invoke<{ data: CodexThread[] }>("list_threads", { cwd }),
   startThread: (cwd: string) => invoke<{ thread: CodexThread }>("start_thread", { cwd }),
   resumeThread: (threadId: string, cwd: string) => invoke<{ thread: CodexThread }>("resume_thread", { threadId, cwd }),

@@ -45,10 +45,13 @@ pub struct CodexClient {
 }
 
 impl CodexClient {
-    pub async fn spawn() -> Result<Arc<Self>, CodexError> {
+    pub async fn spawn(model: Option<String>) -> Result<Arc<Self>, CodexError> {
         let codex_path = find_codex_executable().unwrap_or_else(|| PathBuf::from("codex"));
         let mut command = Command::new(&codex_path);
         command.args(["app-server", "--listen", "stdio://"]);
+        if let Some(model) = model.filter(|value| value != "default") {
+            command.args(["-c", &format!("model={model:?}")]);
+        }
         prepend_command_path(
             &mut command,
             [

@@ -39,7 +39,7 @@ import {
   getOrCreateEntitlementCredential,
   type ManagedEntitlement,
 } from "./billing";
-import { codex, type CodexStatus, type OptionalDependency } from "./codex";
+import { AGENT_MODELS, codex, type AgentKind, type AgentModel, type AgentStatus, type OptionalDependency } from "./codex";
 import { googleLoginAvailable, loginWithGoogle } from "./googleAuth";
 import { decodeBase64Url, decryptJson, encodeBase64Url, encryptJson, generateRoomKey } from "./crypto";
 import type {
@@ -70,6 +70,7 @@ import {
 const emptySnapshot: RoomSnapshot = {
   sequence: 0,
   projectName: "",
+  agentName: "Codex",
   participants: [],
   queue: [],
   queuePaused: false,
@@ -135,7 +136,9 @@ function PlanPreview({ paid }: { paid: boolean }) {
 }
 
 function HostApp() {
-  const [status, setStatus] = useState<CodexStatus>();
+  const [status, setStatus] = useState<AgentStatus>();
+  const [agent, setAgent] = useState<AgentKind>("codex");
+  const [model, setModel] = useState<AgentModel>("default");
   const [cwd, setCwd] = useState("");
   const [relayUrl, setRelayUrl] = useState(defaultRelayUrl);
   const [starting, setStarting] = useState(false);
@@ -163,6 +166,10 @@ function HostApp() {
   useEffect(() => {
     void codex.status().then(setStatus).catch(() => setError("Open this page in the Silverfish desktop app to host a room."));
   }, []);
+
+  useEffect(() => {
+    if (!AGENT_MODELS[agent].some((option) => option.value === model)) setModel("default");
+  }, [agent, model]);
 
   useEffect(() => {
     if (!isManagedService || !showPlans || !entitlementCredential) return;
@@ -211,7 +218,7 @@ function HostApp() {
     setError("");
     try {
       const nextStatus = await codex.installOptionalDependency(dependency);
-      setStatus(nextStatus);
+      setStatus((current) => current ? { ...current, codex: nextStatus } : current);
       if (dependency === "dcg" && (!nextStatus.dcgInstalled || !nextStatus.dcgHookActive)) {
         setError("dcg was installed, but its Codex hook could not be verified. Click the dependency again to retry configuration.");
       }
@@ -230,7 +237,7 @@ function HostApp() {
     setStarting(true);
     setError("");
     try {
-      await codex.connect();
+      await codex.connect(agent, model, cwd);
       const thread = (await codex.startThread(cwd)).thread;
       const room = await createRelayRoom(relayUrl, credential);
       const key = generateRoomKey();
@@ -241,6 +248,7 @@ function HostApp() {
         key,
         thread.id,
         cwd,
+        agent === "codex" ? "Codex" : "Claude Code",
         setSnapshot,
         setError,
       );
@@ -356,12 +364,21 @@ function HostApp() {
         onCreateInvite={createInvite}
         onCloseRoom={endRoom}
         onEject={(connectionId) => roomSecrets && ejectRelayGuest(relayUrl, roomSecrets.roomId, roomSecrets.hostToken, connectionId)}
+        agent={agent}
+        model={model}
+        onSwitchAgent={async (nextAgent, nextModel) => {
+          if (nextAgent === agent && nextModel === model) return;
+          if (!confirm(`Switch this room to ${nextAgent === "codex" ? "Codex" : "Claude Code"}? The active turn will stop and the next prompt receives a handoff.`)) return;
+          await controller.switchAgent(nextAgent, nextModel);
+          setAgent(nextAgent);
+          setModel(nextModel);
+        }}
         error={error}
       />
     );
   }
 
-  const connectBlocker = connectDisabledReason(status, cwd, starting, installingDependency);
+  const connectBlocker = connectDisabledReason(status, agent, cwd, starting, installingDependency);
 
   if (showPlans && isManagedService) {
     return (
@@ -392,7 +409,7 @@ function HostApp() {
         <div>
           <p className="eyebrow">MULTIPLAYER AGENTIC DEVELOPMENT</p>
           <h1>Build together,<br /><span>through one agent.</span></h1>
-          <p className="lede">A shared Codex session with live prompts, steering, approvals, commands, and diffs. Your machine stays the host.</p>
+          <p className="lede">A shared local-agent session with live prompts, approvals, commands, and diffs. Your machine stays the host.</p>
         </div>
         <div className="security-strip">
           <ShieldCheck size={18} />
@@ -406,9 +423,22 @@ function HostApp() {
           <div className="step-number">01</div>
           <div>
             <h2>Connect the host</h2>
-            <p>Silverfish uses your existing Codex login and starts a new thread automatically.</p>
+            <p>Choose a local coding agent and model. Silverfish keeps its login and workspace on this Mac.</p>
           </div>
-          <StatusGrid status={status} installing={installingDependency} onInstall={installDependency} />
+          <label>
+            <span>Local agent</span>
+            <select value={agent} onChange={(event) => setAgent(event.target.value as AgentKind)} disabled={starting}>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+            </select>
+          </label>
+          <label>
+            <span>Model</span>
+            <select value={model} onChange={(event) => setModel(event.target.value as AgentModel)} disabled={starting}>
+              {AGENT_MODELS[agent].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <StatusGrid status={status} agent={agent} installing={installingDependency} onInstall={installDependency} />
           <label>
             <span>Workspace directory</span>
             <div className="path-picker">
@@ -465,29 +495,35 @@ function HostApp() {
 }
 
 function connectDisabledReason(
-  status: CodexStatus | undefined,
+  status: AgentStatus | undefined,
+  agent: AgentKind,
   cwd: string,
   starting: boolean,
   installing: OptionalDependency | undefined,
 ): string {
-  if (starting) return "Codex is already connecting.";
+  if (starting) return "A local agent is already connecting.";
   if (installing) return `Wait for the optional ${installing} installation to finish.`;
-  if (!status) return "Checking the required Codex dependency…";
-  if (!status.installed) return "Install and authenticate the Codex CLI before connecting.";
-  if (!status.compatible) return `Update Codex to version ${status.minimumVersion} or newer before connecting.`;
+  if (!status) return "Checking local agents…";
+  if (agent === "codex") {
+    if (!status.codex.installed) return "Install and authenticate the Codex CLI before connecting.";
+    if (!status.codex.compatible) return `Update Codex to version ${status.codex.minimumVersion} or newer before connecting.`;
+  } else {
+    if (!status.claude.installed) return "Install and authenticate Claude Code before connecting.";
+    if (!status.claude.approvalMediated) return "This Claude Code installation cannot provide shared approvals.";
+  }
   if (!cwd.trim()) return "Choose a workspace directory before connecting.";
   return "";
 }
 
-function StatusGrid({ status, installing, onInstall }: {
-  status?: CodexStatus;
+function StatusGrid({ status, agent, installing, onInstall }: {
+  status?: AgentStatus;
+  agent: AgentKind;
   installing?: OptionalDependency;
   onInstall: (dependency: OptionalDependency) => Promise<void>;
 }) {
-  const requiredRows = [
-    ["Codex CLI", status?.installed, status?.version || "Checking…"],
-    ["App-server API", status?.compatible, status ? `≥ ${status.minimumVersion}` : "Checking…"],
-  ] as const;
+  const requiredRows = agent === "codex"
+    ? [["Codex CLI", status?.codex.installed, status?.codex.version || "Checking…"], ["App-server API", status?.codex.compatible, status ? `≥ ${status.codex.minimumVersion}` : "Checking…"]] as const
+    : [["Claude Code", status?.claude.installed, status?.claude.version || "Checking…"], ["Shared approvals", status?.claude.approvalMediated, status?.claude.approvalMediated ? "Ready" : "Unavailable"]] as const;
   const optionalRows: Array<{
     id: OptionalDependency;
     label: string;
@@ -496,15 +532,16 @@ function StatusGrid({ status, installing, onInstall }: {
   }> = [{
     id: "dcg",
     label: "Destructive guard",
-    ready: Boolean(status?.dcgInstalled && status?.dcgHookActive),
+    ready: Boolean(status?.codex.dcgInstalled && status?.codex.dcgHookActive),
     detail: installing === "dcg"
       ? "Installing…"
-      : status?.dcgHookActive
+      : status?.codex.dcgHookActive
         ? "Optional · hook active"
-        : status?.dcgInstalled
+        : status?.codex.dcgInstalled
           ? "Optional · click to configure"
           : "Optional · click to install",
   }];
+  if (agent === "claude") return <div className="status-grid">{requiredRows.map(([label, ready, detail]) => <div key={label} className="status-row"><span className={ready ? "status-dot ready" : "status-dot"} /><span>{label}</span><code>{detail}</code></div>)}</div>;
   return (
     <div className="status-grid">
       {requiredRows.map(([label, ready, detail]) => (
@@ -858,7 +895,7 @@ function applyHostEvent(current: RoomSnapshot, event: HostEvent, sequence: numbe
   return current;
 }
 
-function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, error }: {
+function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, agent, model, onSwitchAgent, error }: {
   snapshot: RoomSnapshot;
   actions: RoomActions;
   isHost: boolean;
@@ -872,6 +909,9 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
   onCreateInvite?: () => Promise<void>;
   onCloseRoom?: () => void;
   onEject?: (connectionId: string) => Promise<void> | undefined;
+  agent?: AgentKind;
+  model?: AgentModel;
+  onSwitchAgent?: (agent: AgentKind, model: AgentModel) => Promise<void>;
   error?: string;
 }) {
   const [text, setText] = useState("");
@@ -880,10 +920,13 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
   const endRef = useRef<HTMLDivElement>(null);
   const displayProjectName = projectName || snapshot.projectName || "Project";
   const roomConnectionLabel = roomLimits ? hostConnectionLabel(roomLimits, now) : connectionLabel;
-  const stickyAgentMessageIndex = snapshot.timeline.reduce(
-    (lastIndex, item, index) => item.kind === "agentMessage" && item.completed ? index : lastIndex,
-    -1,
+  const activeAgentMessage = snapshot.timeline.reduce<TimelineItem | undefined>(
+    (active, item) => item.kind === "agentMessage" && !item.completed ? item : active,
+    undefined,
   );
+  const timelineItems = activeAgentMessage
+    ? snapshot.timeline.filter((item) => item.id !== activeAgentMessage.id)
+    : snapshot.timeline;
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [snapshot.timeline.length]);
@@ -907,11 +950,22 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
         <div className="room-brand"><div className="brand-mark small"><SilverfishMark size={21} /></div><strong>Silverfish</strong><span>/</span><span className="project-name" title={displayProjectName}>{displayProjectName}</span></div>
         <div className="room-status"><span className="live-dot" /> LIVE <span className="room-divider" /> {roomConnectionLabel}</div>
         <div className="header-actions">
+          {isHost && agent && model && onSwitchAgent ? <span className="agent-switcher">
+            <select value={agent} aria-label="Active agent" onChange={(event) => void onSwitchAgent(event.target.value as AgentKind, "default")}>
+              <option value="codex">Codex</option><option value="claude">Claude Code</option>
+            </select>
+            <select value={model} aria-label="Active model" onChange={(event) => void onSwitchAgent(agent, event.target.value as AgentModel)}>
+              {AGENT_MODELS[agent].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </span> : null}
           {isHost ? <button className="invite-link" onClick={() => void onCreateInvite?.()} disabled={creatingInvite} aria-label="Copy invite link">Invite <Link2 size={15} /></button> : null}
           {isHost && <button className="secondary end-room" onClick={onCloseRoom}>End room</button>}
           <button className="icon-button danger" title="Interrupt turn" disabled={!snapshot.activeTurnId} onClick={() => void actions.interrupt()}><CircleStop size={18} /></button>
         </div>
       </header>
+      {snapshot.activeTurnId ? (
+        <CurrentWorkRail agentName={snapshot.agentName || "Local agent"} text={activeAgentMessage?.kind === "agentMessage" ? activeAgentMessage.text : ""} />
+      ) : null}
       {inviteToast ? <div className="invite-toast" role="status"><Check size={16} /><span>{inviteToast}</span></div> : null}
       <div className="room-banners">
         {isHost && managedService && roomLimits?.expiresAtMs ? (
@@ -925,13 +979,13 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
       <div className="room-grid">
         <section className="timeline-panel">
           <div className="timeline-scroll">
-            {snapshot.timeline.length === 0 ? (
+            {timelineItems.length === 0 && !activeAgentMessage ? (
               <div className="empty-timeline"><Bot size={34} /><h2>The room is ready</h2><p>Send the first prompt to begin working together.</p></div>
-            ) : snapshot.timeline.map((item, index) => (
+            ) : timelineItems.map((item) => (
               <TimelineCard
                 key={item.id}
                 item={item}
-                sticky={index === stickyAgentMessageIndex}
+                agentName={snapshot.agentName || "Local agent"}
               />
             ))}
             <div ref={endRef} />
@@ -944,7 +998,7 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
             <div className="composer">
               <textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
-              }} placeholder={mode === "steer" ? "Redirect the active turn…" : "Ask Codex to build, inspect, or change something…"} />
+              }} placeholder={mode === "steer" ? "Redirect the active turn…" : `Ask ${snapshot.agentName || "the agent"} to build, inspect, or change something…`} />
               <button onClick={() => void submit()} disabled={!text.trim()}><Send size={18} /></button>
             </div>
             <div className="composer-foot"><span>Enter to send · Shift+Enter for newline</span><span>{text.length.toLocaleString()} / 32,000</span></div>
@@ -1011,9 +1065,16 @@ function SidebarSection({ icon, title, count, action, children }: { icon: React.
   return <section className="sidebar-section"><header>{icon}<strong>{title}</strong><span>{count}</span>{action}</header>{children}</section>;
 }
 
-function TimelineCard({ item, sticky = false }: { item: TimelineItem; sticky?: boolean }) {
+function CurrentWorkRail({ agentName, text }: { agentName: string; text: string }) {
+  return <section className="current-work-rail" aria-label={`${agentName} current work`}>
+    <header><span className="current-work-dot" /><strong>{agentName}</strong><span>Working now</span></header>
+    <div className="current-work-copy">{text || "Preparing response…"}</div>
+  </section>;
+}
+
+function TimelineCard({ item, agentName }: { item: TimelineItem; agentName: string }) {
   if (item.kind === "userMessage") return <article className="timeline-card user-card"><div className="timeline-meta"><span className="avatar">{item.authorName.slice(0, 1)}</span><strong>{item.authorName}</strong><span>prompted</span></div><p>{item.text}</p></article>;
-  if (item.kind === "agentMessage") return <article className={`timeline-card agent-card${sticky ? " sticky-agent-card" : ""}`}><div className="timeline-meta"><Bot size={17} /><strong>Codex</strong>{!item.completed && <span className="streaming">working</span>}</div><div className="agent-copy">{item.text}</div></article>;
+  if (item.kind === "agentMessage") return <article className="timeline-card agent-card"><div className="timeline-meta"><Bot size={17} /><strong>{agentName}</strong>{!item.completed && <span className="streaming">working</span>}</div><div className="agent-copy">{item.text}</div></article>;
   if (item.kind === "command") return <article className="tool-card"><header><TerminalSquare size={16} /><strong>{item.command}</strong><span>{item.status}</span></header>{item.output && <pre>{item.output}</pre>}</article>;
   if (item.kind === "fileChange") return <article className="tool-card diff-card"><header><FileDiff size={16} /><strong>{item.path}</strong><span>{item.status}</span></header><pre>{item.diff}</pre></article>;
   if (item.kind === "reasoning" || item.kind === "plan") return <article className="thought-card"><header>{item.kind === "plan" ? <Clipboard size={15} /> : <Sparkles size={15} />}<strong>{item.kind === "plan" ? "Plan" : "Reasoning"}</strong></header><p>{item.kind === "plan" ? item.text : item.summary}</p></article>;

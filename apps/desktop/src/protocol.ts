@@ -49,6 +49,7 @@ export interface ApprovalRequest {
 export interface RoomSnapshot {
   sequence: number;
   projectName: string;
+  agentName?: string;
   participants: Participant[];
   queue: QueuedPrompt[];
   queuePaused: boolean;

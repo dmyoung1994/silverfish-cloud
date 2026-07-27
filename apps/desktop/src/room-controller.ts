@@ -1,4 +1,4 @@
-import { codex } from "./codex";
+import { codex, type AgentKind, type AgentModel } from "./codex";
 import { decryptJson, encryptJson } from "./crypto";
 import type {
   ApprovalRequest,
@@ -29,14 +29,16 @@ export class HostRoomController {
   private approvals = new Map<string, ApprovalRequest>();
   private recoveryPoints: RecoveryPointSummary[] = [];
   private draining = false;
+  private pendingHandoff = "";
   private unlistenCodex?: () => void;
 
   constructor(
     private readonly socket: WebSocket,
     private readonly roomId: string,
     private readonly key: Uint8Array<ArrayBuffer>,
-    private readonly threadId: string,
+    private threadId: string,
     private readonly workspace: string,
+    private agentName: string,
     private readonly onState: StateListener,
     private readonly onError: ErrorListener,
   ) {
@@ -56,6 +58,7 @@ export class HostRoomController {
     return {
       sequence: this.sequence,
       projectName: workspaceName(this.workspace),
+      agentName: this.agentName,
       participants: [...this.participants.values()],
       queue: [...this.queue],
       queuePaused: this.queuePaused,
@@ -102,6 +105,29 @@ export class HostRoomController {
     };
     this.upsertTimeline(item);
     await this.publish({ type: "timeline", item });
+  }
+
+  async switchAgent(agent: AgentKind, model: AgentModel): Promise<void> {
+    this.queuePaused = true;
+    await this.publishQueue();
+    if (this.activeTurnId) await codex.interrupt(this.threadId, this.activeTurnId);
+    const nextName = agent === "codex" ? "Codex" : "Claude Code";
+    const handoff = buildHandoff(this.workspace, this.timeline, this.queue);
+    await codex.connect(agent, model, this.workspace);
+    const thread = (await codex.startThread(this.workspace)).thread;
+    this.threadId = thread.id;
+    this.agentName = nextName;
+    this.pendingHandoff = handoff;
+    const item: TimelineItem = {
+      kind: "system",
+      id: crypto.randomUUID(),
+      message: `Host switched the room to ${nextName}${model === "default" ? "" : ` (${model})`}. The next turn receives a redacted handoff.`,
+    };
+    this.upsertTimeline(item);
+    await this.publish({ type: "timeline", item });
+    this.queuePaused = false;
+    await this.publishQueue();
+    void this.drainQueue();
   }
 
   private async handleRelay(message: RelayInbound): Promise<void> {
@@ -233,7 +259,11 @@ export class HostRoomController {
       };
       this.recoveryPoints = [point, ...this.recoveryPoints].slice(0, 20);
       await this.publish({ type: "recoveryPoint", point });
-      await codex.startTurn(this.threadId, next.text);
+      const text = this.pendingHandoff
+        ? `${this.pendingHandoff}\n\nNew room request:\n${next.text}`
+        : next.text;
+      this.pendingHandoff = "";
+      await codex.startTurn(this.threadId, text);
     } catch (error) {
       this.queue.unshift(next);
       this.queuePaused = true;
@@ -335,6 +365,19 @@ export class HostRoomController {
 export function workspaceName(workspace: string): string {
   const segments = workspace.trim().split(/[\\/]+/).filter(Boolean);
   return segments.at(-1) || workspace.trim() || "Project";
+}
+
+function buildHandoff(workspace: string, timeline: TimelineItem[], queue: QueuedPrompt[]): string {
+  const recent = timeline.slice(-24).map((item) => {
+    if (item.kind === "userMessage") return `User (${item.authorName}): ${item.text}`;
+    if (item.kind === "agentMessage") return `Agent: ${item.text}`;
+    if (item.kind === "fileChange") return `File change: ${item.path}`;
+    if (item.kind === "command") return `Command: ${item.command} (${item.status})`;
+    if (item.kind === "system") return `System: ${item.message}`;
+    return item.kind;
+  }).join("\n");
+  const waiting = queue.slice(0, 8).map((prompt) => `${prompt.authorName}: ${prompt.text}`).join("\n");
+  return cleanText(`You are taking over an existing shared coding room. Workspace: ${workspace}.\nRecent room context:\n${recent || "No earlier activity."}\nQueued work:\n${waiting || "None."}\nContinue safely; request approval for commands and file changes.`, 16_000);
 }
 
 function normalizeCodexEvent(method: string, params: Record<string, unknown>, timeline: TimelineItem[]): TimelineItem | undefined {

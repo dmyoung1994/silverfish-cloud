@@ -8,6 +8,7 @@ on:
 jobs:
   build-and-publish:
     runs-on: macos-14
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -30,8 +31,8 @@ jobs:
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
-      - name: Build, sign, and notarize
-        uses: tauri-apps/tauri-action@v0
+      - name: Build and sign
+        run: npm --workspace apps/desktop run tauri -- build --target aarch64-apple-darwin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -39,23 +40,37 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
           VITE_SILVERFISH_MANAGED_SERVICE: "true"
           VITE_SILVERFISH_RELAY_URL: ${{ vars.VITE_SILVERFISH_RELAY_URL }}
           VITE_SILVERFISH_SUBSCRIBE_URL: ${{ vars.VITE_SILVERFISH_SUBSCRIBE_URL }}
           VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
           VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.VITE_GOOGLE_OAUTH_CLIENT_ID }}
           VITE_GOOGLE_OAUTH_CLIENT_SECRET: ${{ vars.VITE_GOOGLE_OAUTH_CLIENT_SECRET }}
+      - name: Preserve the signed DMG before notarization
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: apps/desktop
-          args: --target aarch64-apple-darwin
+          name: Silverfish-macOS-arm64-signed
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Notarize, staple, and verify
+        run: |
+          set -euo pipefail
+          dmg=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -n1)
+          codesign --verify --deep --strict --verbose=2 "$dmg"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 45m
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
 
       - name: Publish the signed .dmg to the site's download folder
         run: |
           set -euo pipefail
-          dmg=$(find apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -n1)
+          dmg=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -n1)
           mkdir -p apps/desktop/public/downloads
           cp "$dmg" apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
 
