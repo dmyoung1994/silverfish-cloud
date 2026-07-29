@@ -1,6 +1,7 @@
 import { codex, type AgentKind, type AgentModel } from "./codex";
 import { decryptJson, encryptJson } from "./crypto";
 import type {
+  AgentSkill,
   ApprovalRequest,
   CipherEnvelope,
   ClientIntent,
@@ -39,6 +40,7 @@ export class HostRoomController {
     private threadId: string,
     private readonly workspace: string,
     private agentName: string,
+    private skills: AgentSkill[],
     private readonly onState: StateListener,
     private readonly onError: ErrorListener,
   ) {
@@ -60,6 +62,7 @@ export class HostRoomController {
       projectName: workspaceName(this.workspace),
       agentName: this.agentName,
       participants: [...this.participants.values()],
+      skills: this.skills,
       queue: [...this.queue],
       queuePaused: this.queuePaused,
       activeTurnId: this.activeTurnId,
@@ -105,6 +108,11 @@ export class HostRoomController {
     };
     this.upsertTimeline(item);
     await this.publish({ type: "timeline", item });
+  }
+
+  async setSkills(skills: AgentSkill[]): Promise<void> {
+    this.skills = skills;
+    await this.publish({ type: "skillsUpdated", skills });
   }
 
   async switchAgent(agent: AgentKind, model: AgentModel): Promise<void> {
@@ -421,6 +429,18 @@ function normalizeCodexEvent(method: string, params: Record<string, unknown>, ti
     if (type === "commandExecution") {
       const command = Array.isArray(rawItem.command) ? rawItem.command.join(" ") : String(rawItem.command ?? "Command");
       return { kind: "command", id: itemId, command: redactSecrets(command), output: prior?.kind === "command" ? prior.output : "", status: String(rawItem.status ?? "inProgress") };
+    }
+    if (type.toLowerCase().includes("mcp")) {
+      const server = String(rawItem.server ?? rawItem.serverName ?? "MCP bridge");
+      const tool = String(rawItem.tool ?? rawItem.toolName ?? rawItem.name ?? "tool");
+      const detail = rawItem.arguments ?? rawItem.input ?? rawItem.result ?? "";
+      return {
+        kind: "tool",
+        id: itemId,
+        name: `MCP · ${server}.${tool}`,
+        detail: redactSecrets(typeof detail === "string" ? detail : JSON.stringify(detail)),
+        status: String(rawItem.status ?? (method === "item/completed" ? "completed" : "inProgress")),
+      };
     }
   }
   return undefined;

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { AgentSkill } from "./protocol";
 
 export interface CodexStatus {
   installed: boolean;
@@ -58,6 +59,8 @@ export interface RecoveryPoint {
 export const codex = {
   status: () => invoke<AgentStatus>("agent_status"),
   installOptionalDependency: (dependency: OptionalDependency) => invoke<CodexStatus>("install_optional_dependency", { dependency }),
+  listSkills: (workspace: string | undefined, agent: AgentKind) => invoke<AgentSkill[]>("list_agent_skills", { workspace, agent }),
+  installSkillFromGitHub: (source: string, workspace: string, agent: AgentKind) => invoke<AgentSkill[]>("install_agent_skill", { source, workspace, agent }),
   connect: (agent: AgentKind, model: AgentModel, cwd: string) => invoke<void>("connect_agent", { agent, model, cwd }),
   listThreads: (cwd?: string) => invoke<{ data: CodexThread[] }>("list_threads", { cwd }),
   startThread: (cwd: string) => invoke<{ thread: CodexThread }>("start_thread", { cwd }),

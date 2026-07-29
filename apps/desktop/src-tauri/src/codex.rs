@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
@@ -16,6 +16,8 @@ use tokio::{
     process::{Child, ChildStdin, Command},
     sync::{Mutex, broadcast, oneshot},
 };
+
+use crate::mcp_bridge::McpBridge;
 
 const MINIMUM_CODEX_VERSION: &str = "0.144.1";
 const CODEX_PATH_ENV: &str = "SILVERFISH_CODEX_PATH";
@@ -45,10 +47,19 @@ pub struct CodexClient {
 }
 
 impl CodexClient {
-    pub async fn spawn(model: Option<String>) -> Result<Arc<Self>, CodexError> {
+    pub async fn spawn(model: Option<String>, workspace: &str, bridge: McpBridge) -> Result<Arc<Self>, CodexError> {
         let codex_path = find_codex_executable().unwrap_or_else(|| PathBuf::from("codex"));
         let mut command = Command::new(&codex_path);
         command.args(["app-server", "--listen", "stdio://"]);
+        for direct_server in project_mcp_servers(workspace) {
+            command.args(["-c", &format!("mcp_servers.{direct_server}.enabled=false")]);
+        }
+        command
+            .args(["-c", &format!("mcp_servers.{}.command={:?}", bridge.name, "node")])
+            .args(["-c", &format!("mcp_servers.{}.args={:?}", bridge.name, vec![bridge.script.to_string_lossy().to_string()])])
+            .args(["-c", &format!("mcp_servers.{}.env={{SILVERFISH_MCP_BRIDGE_CONFIG={:?}}}", bridge.name, bridge.upstream_config.to_string_lossy())])
+            .args(["-c", &format!("mcp_servers.{}.enabled=true", bridge.name)])
+            .env("CODEX_HOME", bridge.codex_home);
         if let Some(model) = model.filter(|value| value != "default") {
             command.args(["-c", &format!("model={model:?}")]);
         }
@@ -293,6 +304,16 @@ impl CodexClient {
     }
 }
 
+fn project_mcp_servers(workspace: &str) -> Vec<String> {
+    let config = PathBuf::from(workspace).join(".codex/config.toml");
+    let Ok(contents) = std::fs::read_to_string(config) else { return Vec::new(); };
+    contents.lines().filter_map(|line| {
+        let header = line.trim().strip_prefix("[mcp_servers.")?.strip_suffix(']')?.trim();
+        let name = header.strip_prefix('"').and_then(|value| value.strip_suffix('"')).unwrap_or(header);
+        name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-').then(|| name.to_owned())
+    }).collect()
+}
+
 impl Drop for CodexClient {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.try_lock() {
@@ -310,6 +331,131 @@ pub struct CodexStatus {
     pub minimum_version: &'static str,
     pub dcg_installed: bool,
     pub dcg_hook_active: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+}
+
+pub async fn list_skills(workspace: Option<String>, agent: String) -> Result<Vec<AgentSkill>, String> {
+    tokio::task::spawn_blocking(move || discover_skills(workspace.as_deref(), &agent))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn install_skill_from_github(source: String, workspace: String, agent: String) -> Result<Vec<AgentSkill>, String> {
+    let source = source.trim().to_owned();
+    if !source.starts_with("https://github.com/") {
+        return Err("Enter a GitHub skill URL (https://github.com/owner/repo/tree/ref/path).".into());
+    }
+    let codex_home = codex_home().ok_or_else(|| "Could not find the host Codex home directory.".to_owned())?;
+    let installer = codex_home.join("skills/.system/skill-installer/scripts/install-skill-from-github.py");
+    if !installer.is_file() {
+        return Err("The host Codex skill installer is unavailable. Update Codex, then try again.".into());
+    }
+    let output = Command::new("python3")
+        .arg(installer)
+        .arg("--url")
+        .arg(source)
+        .arg("--dest")
+        .arg(skill_destination(&agent, &workspace)?)
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .await
+        .map_err(|error| format!("Could not start the Codex skill installer: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() { "Codex could not install that skill.".into() } else { detail });
+    }
+    list_skills(Some(workspace), agent).await
+}
+
+fn discover_skills(workspace: Option<&str>, agent: &str) -> Vec<AgentSkill> {
+    let codex_home = codex_home();
+    let claude_home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude/skills"));
+    let mut roots: Vec<(PathBuf, &str)> = Vec::new();
+    if let Some(workspace) = workspace.filter(|value| !value.is_empty()) {
+        let workspace = PathBuf::from(workspace);
+        if agent == "claude" {
+            roots.push((workspace.join(".claude/skills"), "Claude project"));
+        } else {
+            roots.push((workspace.join(".codex/skills"), "Codex project"));
+        }
+    }
+    if agent == "claude" {
+        if let Some(home) = claude_home { roots.push((home, "Claude home")); }
+    } else if let Some(home) = codex_home {
+        roots.push((home.join("skills"), "Codex home"));
+    }
+
+    let mut seen = HashSet::new();
+    let mut skills = Vec::new();
+    for (root, source) in roots {
+        for manifest in skill_manifests(&root) {
+            let Some(mut skill) = parse_skill_manifest(&manifest, source) else { continue; };
+            if !seen.insert(skill.name.to_ascii_lowercase()) { continue; }
+            if skill.description.is_empty() {
+                skill.description = "No description provided.".to_owned();
+            }
+            skills.push(skill);
+        }
+    }
+    skills.sort_by(|left, right| left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase()));
+    skills
+}
+
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+}
+
+fn skill_destination(agent: &str, workspace: &str) -> Result<PathBuf, String> {
+    if agent == "claude" {
+        if workspace.trim().is_empty() {
+            return Err("Choose a workspace before installing a Claude Code skill.".into());
+        }
+        return Ok(PathBuf::from(workspace).join(".claude/skills"));
+    }
+    codex_home()
+        .map(|home| home.join("skills"))
+        .ok_or_else(|| "Could not find the host Codex home directory.".to_owned())
+}
+
+fn skill_manifests(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new(); };
+    entries.filter_map(Result::ok).flat_map(|entry| {
+        let path = entry.path();
+        let direct = path.join("SKILL.md");
+        if direct.is_file() { return vec![direct]; }
+        let Ok(nested) = std::fs::read_dir(&path) else { return Vec::new(); };
+        nested.filter_map(Result::ok)
+            .map(|nested| nested.path().join("SKILL.md"))
+            .filter(|manifest| manifest.is_file())
+            .collect()
+    }).collect()
+}
+
+fn parse_skill_manifest(path: &Path, source: &str) -> Option<AgentSkill> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let frontmatter = contents.strip_prefix("---")?.splitn(2, "---").next()?;
+    let mut name = None;
+    let mut description = None;
+    for line in frontmatter.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue; };
+        let value = value.trim().trim_matches(['"', '\'']).to_owned();
+        match key.trim() {
+            "name" => name = Some(value),
+            "description" => description = Some(value),
+            _ => {}
+        }
+    }
+    let name = name.or_else(|| path.parent()?.file_name()?.to_str().map(str::to_owned))?;
+    Some(AgentSkill { name, description: description.unwrap_or_default(), source: source.to_owned() })
 }
 
 pub async fn detect_status() -> CodexStatus {

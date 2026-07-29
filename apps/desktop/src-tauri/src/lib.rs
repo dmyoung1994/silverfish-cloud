@@ -2,6 +2,7 @@ mod audit;
 mod claude;
 mod codex;
 mod google_auth;
+mod mcp_bridge;
 mod recovery;
 
 use std::sync::{Arc, Mutex as StdMutex};
@@ -53,6 +54,16 @@ async fn install_optional_dependency(dependency: String) -> Result<CodexStatus, 
 }
 
 #[tauri::command]
+async fn list_agent_skills(workspace: Option<String>, agent: String) -> Result<Vec<codex::AgentSkill>, String> {
+    codex::list_skills(workspace, agent).await
+}
+
+#[tauri::command]
+async fn install_agent_skill(source: String, workspace: String, agent: String) -> Result<Vec<codex::AgentSkill>, String> {
+    codex::install_skill_from_github(source, workspace, agent).await
+}
+
+#[tauri::command]
 async fn connect_agent(
     app: AppHandle,
     state: State<'_, RuntimeState>,
@@ -60,9 +71,10 @@ async fn connect_agent(
     model: Option<String>,
     cwd: String,
 ) -> Result<(), String> {
+    let bridge = mcp_bridge::resolve(&app, &cwd)?;
     let client = match agent.as_str() {
-        "codex" => ActiveAgent::Codex(CodexClient::spawn(model).await.map_err(|error| error.to_string())?),
-        "claude" => ActiveAgent::Claude(ClaudeClient::new(cwd, model)),
+        "codex" => ActiveAgent::Codex(CodexClient::spawn(model, &cwd, bridge).await.map_err(|error| error.to_string())?),
+        "claude" => ActiveAgent::Claude(ClaudeClient::new(cwd, model, bridge)),
         _ => return Err("Unknown local agent".into()),
     };
     let mut events = match &client {
@@ -307,6 +319,8 @@ pub fn run() {
             agent_status,
             codex_status,
             install_optional_dependency,
+            list_agent_skills,
+            install_agent_skill,
             connect_agent,
             connect_codex,
             list_threads,

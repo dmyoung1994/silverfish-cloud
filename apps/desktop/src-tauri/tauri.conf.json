@@ -34,6 +34,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../mcp-bridge/dist/server.mjs": "mcp-bridge/server.mjs",
+      "../mcp-bridge/servers.json": "mcp-bridge/servers.json"
+    },
     "macOS": {
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,

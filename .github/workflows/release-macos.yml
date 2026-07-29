@@ -69,22 +69,34 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
 
-      - name: Publish the signed .dmg to the site's download folder
+      - name: Publish signed release assets to the public repository
         run: |
           set -euo pipefail
           dmg=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -n1)
           updater_bundle=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -n1)
           test -n "$updater_bundle" && test -f "$updater_bundle.sig"
-          mkdir -p apps/desktop/public/downloads apps/desktop/public/updates
-          cp "$dmg" apps/desktop/public/downloads/Silverfish-macOS-arm64.dmg
+          mkdir -p apps/desktop/public/updates
           release_version=$(node -p 'require("./apps/desktop/package.json").version')
+          release_tag="v${release_version}"
+          public_repo="dmyoung1994/silverfish"
+          if ! gh release view "$release_tag" --repo "$public_repo" >/dev/null 2>&1; then
+            gh release create "$release_tag" --repo "$public_repo" --title "Silverfish v${release_version}" --notes "Guest-to-host conversion funnel and automatic in-app updates."
+          fi
+          gh release upload "$release_tag" \
+            "$dmg#Silverfish-macOS-arm64.dmg" \
+            "$updater_bundle#Silverfish.app.tar.gz" \
+            "$updater_bundle.sig#Silverfish.app.tar.gz.sig" \
+            --repo "$public_repo" --clobber
           node scripts/publish-updater-release.mjs \
             --version "$release_version" \
             --artifact "$updater_bundle" \
             --signature "$updater_bundle.sig" \
-            --base-url "https://try.silverfish-app.workers.dev" \
+            --artifact-url "https://github.com/${public_repo}/releases/download/${release_tag}/Silverfish.app.tar.gz" \
             --notes "Guest-to-host conversion funnel and automatic in-app updates." \
             --output-dir apps/desktop/public/updates
+          gh release upload "$release_tag" apps/desktop/public/updates/latest.json --repo "$public_repo" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.SILVERFISH_PUBLIC_RELEASE_TOKEN }}
 
       - run: npm run build
 

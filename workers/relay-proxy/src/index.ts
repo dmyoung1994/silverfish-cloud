@@ -15,7 +15,7 @@ const CONVERSION_EVENTS_PATH = "/api/conversions/events";
 const MANAGED_PLAN_HEADER = "x-silverfish-managed-plan";
 const PROXY_SECRET_HEADER = "x-silverfish-proxy-secret";
 const MACOS_DOWNLOAD_PATH = "/downloads/Silverfish-macOS-arm64.dmg";
-const MACOS_DOWNLOAD_URL = "https://github.com/dmyoung1994/silverfish-cloud/releases/latest/download/Silverfish-macOS-arm64.dmg";
+const MACOS_DOWNLOAD_URL = "https://github.com/dmyoung1994/silverfish/releases/latest/download/Silverfish-macOS-arm64.dmg";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

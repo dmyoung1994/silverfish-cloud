@@ -11,6 +11,8 @@ use tokio::{
     sync::{Mutex, broadcast},
 };
 
+use crate::mcp_bridge::McpBridge;
+
 const CLAUDE_PATH_ENV: &str = "SILVERFISH_CLAUDE_PATH";
 
 #[derive(Debug, serde::Serialize)]
@@ -42,17 +44,19 @@ pub async fn detect_status() -> ClaudeStatus {
 pub struct ClaudeClient {
     cwd: String,
     model: Option<String>,
+    bridge: McpBridge,
     active: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     events: broadcast::Sender<Value>,
 }
 
 impl ClaudeClient {
-    pub fn new(cwd: String, model: Option<String>) -> Arc<Self> {
+    pub fn new(cwd: String, model: Option<String>, bridge: McpBridge) -> Arc<Self> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Self {
             cwd,
             model: model.filter(|value| value != "default"),
+            bridge,
             active: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(None)),
             events,
@@ -76,12 +80,14 @@ impl ClaudeClient {
                 "--output-format", "stream-json",
                 "--include-partial-messages",
                 "--permission-mode", "manual",
+                "--strict-mcp-config",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
         if let Some(model) = &self.model { command.args(["--model", model]); }
+        command.args(["--mcp-config", &self.bridge.claude_config()]);
         command.args(["--", text]);
         let mut child = command.spawn().map_err(|error| format!("Could not start Claude Code: {error}"))?;
         let stdout = child.stdout.take().ok_or_else(|| "Claude Code did not expose stdout".to_owned())?;

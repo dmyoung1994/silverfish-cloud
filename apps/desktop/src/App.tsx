@@ -23,6 +23,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Search,
   Send,
   ShieldCheck,
   Sparkles,
@@ -75,6 +76,7 @@ const emptySnapshot: RoomSnapshot = {
   projectName: "",
   agentName: "Codex",
   participants: [],
+  skills: [],
   queue: [],
   queuePaused: false,
   timeline: [],
@@ -283,6 +285,7 @@ function HostApp() {
     try {
       await codex.connect(agent, model, cwd);
       const thread = (await codex.startThread(cwd)).thread;
+      const skills = await codex.listSkills(cwd, agent).catch(() => []);
       const room = await createRelayRoom(relayUrl, credential);
       if (isManagedService) recordConversionEvent(relayUrl, hostCampaign, "room_started", entitlementCredential);
       const key = generateRoomKey();
@@ -294,12 +297,14 @@ function HostApp() {
         thread.id,
         cwd,
         agent === "codex" ? "Codex" : "Claude Code",
+        skills,
         setSnapshot,
         setError,
       );
       await waitForSocket(socket);
       setRoomSecrets({ ...room, key });
       setController(nextController);
+      setSnapshot(nextController.snapshot());
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -415,8 +420,15 @@ function HostApp() {
           if (nextAgent === agent && nextModel === model) return;
           if (!confirm(`Switch this room to ${nextAgent === "codex" ? "Codex" : "Claude Code"}? The active turn will stop and the next prompt receives a handoff.`)) return;
           await controller.switchAgent(nextAgent, nextModel);
+          const skills = await codex.listSkills(cwd, nextAgent);
+          await controller.setSkills(skills);
           setAgent(nextAgent);
           setModel(nextModel);
+        }}
+        onInstallSkill={async (source) => {
+          await codex.installSkillFromGitHub(source, cwd, agent);
+          const skills = await codex.listSkills(cwd, agent);
+          await controller.setSkills(skills);
         }}
         error={error}
       />
@@ -956,6 +968,7 @@ async function handleGuestRelay(
 function applyHostEvent(current: RoomSnapshot, event: HostEvent, sequence: number): RoomSnapshot {
   if (event.type === "snapshot") return event.state;
   if (event.type === "presence") return { ...current, sequence, participants: event.participants };
+  if (event.type === "skillsUpdated") return { ...current, sequence, skills: event.skills };
   if (event.type === "queueUpdated") return { ...current, sequence, queue: event.queue, queuePaused: event.paused };
   if (event.type === "turnState") return { ...current, sequence, activeTurnId: event.active ? event.turnId : undefined };
   if (event.type === "approvalOpened") return { ...current, sequence, approvals: [...current.approvals.filter((item) => item.id !== event.approval.id), event.approval] };
@@ -971,7 +984,7 @@ function applyHostEvent(current: RoomSnapshot, event: HostEvent, sequence: numbe
   return current;
 }
 
-function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, agent, model, onSwitchAgent, guestHostHref, error }: {
+function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, roomLimits, managedService, subscribeHref, inviteToast, creatingInvite, onCreateInvite, onCloseRoom, onEject, agent, model, onSwitchAgent, onInstallSkill, guestHostHref, error }: {
   snapshot: RoomSnapshot;
   actions: RoomActions;
   isHost: boolean;
@@ -988,11 +1001,17 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
   agent?: AgentKind;
   model?: AgentModel;
   onSwitchAgent?: (agent: AgentKind, model: AgentModel) => Promise<void>;
+  onInstallSkill?: (source: string) => Promise<void>;
   guestHostHref?: string;
   error?: string;
 }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"prompt" | "steer">("prompt");
+  const [skillQuery, setSkillQuery] = useState("");
+  const [showSkillInstall, setShowSkillInstall] = useState(false);
+  const [skillSource, setSkillSource] = useState("");
+  const [installingSkill, setInstallingSkill] = useState(false);
+  const [skillInstallError, setSkillInstallError] = useState("");
   const [now, setNow] = useState(Date.now());
   const endRef = useRef<HTMLDivElement>(null);
   const displayProjectName = projectName || snapshot.projectName || "Project";
@@ -1004,6 +1023,11 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
   const timelineItems = activeAgentMessage
     ? snapshot.timeline.filter((item) => item.id !== activeAgentMessage.id)
     : snapshot.timeline;
+  const visibleSkills = useMemo(() => {
+    const query = skillQuery.trim().toLocaleLowerCase();
+    if (!query) return snapshot.skills;
+    return snapshot.skills.filter((skill) => `${skill.name} ${skill.description}`.toLocaleLowerCase().includes(query));
+  }, [skillQuery, snapshot.skills]);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [snapshot.timeline.length]);
@@ -1019,6 +1043,28 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
     setText("");
     if (mode === "steer") await actions.steer(value);
     else await actions.prompt(value);
+  }
+
+  function addSkillToPrompt(skill: typeof snapshot.skills[number]) {
+    const instruction = `Use the ${skill.name} skill for this task.`;
+    setMode("prompt");
+    setText((current) => current.trim() ? `${instruction}\n\n${current}` : `${instruction}\n\n`);
+  }
+
+  async function installSkill() {
+    const source = skillSource.trim();
+    if (!source || !onInstallSkill) return;
+    setInstallingSkill(true);
+    setSkillInstallError("");
+    try {
+      await onInstallSkill(source);
+      setSkillSource("");
+      setShowSkillInstall(false);
+    } catch (reason) {
+      setSkillInstallError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setInstallingSkill(false);
+    }
   }
 
   return (
@@ -1085,6 +1131,22 @@ function RoomShell({ snapshot, actions, isHost, projectName, connectionLabel, ro
         <aside className="room-sidebar">
           <SidebarSection icon={<Users size={15} />} title="In this room" count={snapshot.participants.length}>
             <div className="participants">{snapshot.participants.map((person) => <div className="participant" key={person.connectionId}><span className="avatar">{person.displayName.slice(0, 1).toUpperCase()}</span><span>{person.displayName}</span>{person.isHost ? <em>HOST</em> : isHost && <button className="eject-button" title="Remove and revoke guest" onClick={() => void onEject?.(person.connectionId)}><X size={12} /></button>}<span className="online-dot" /></div>)}</div>
+          </SidebarSection>
+          <SidebarSection icon={<Sparkles size={15} />} title="Agent skills" count={snapshot.skills.length} action={isHost ? <button className="tiny-button skill-install-toggle" onClick={() => setShowSkillInstall((visible) => !visible)} title="Install a GitHub skill"><Download size={13} /></button> : undefined}>
+            <p className="skills-note">Available on the host. Add one to the next prompt so everyone sees the capability in play.</p>
+            {showSkillInstall ? <div className="skill-install-form"><label><span>GitHub skill URL</span><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder="https://github.com/owner/repo/tree/main/skills/example" /></label><button onClick={() => void installSkill()} disabled={!skillSource.trim() || installingSkill}>{installingSkill ? "Installing…" : `Install to ${agent === "claude" ? "Claude Code" : "Codex"}`}</button><small>Installs to this host’s active {agent === "claude" ? ".claude/skills" : "Codex skills"} directory. Available on the next turn.</small>{skillInstallError ? <p>{skillInstallError}</p> : null}</div> : null}
+            <label className="skill-search"><Search size={13} /><input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder="Search skills" aria-label="Search agent skills" /></label>
+            <div className="skill-list">
+              {visibleSkills.length === 0 ? <p className="sidebar-empty">{snapshot.skills.length === 0 ? "No skills shared by the host" : "No matching skills"}</p> : visibleSkills.slice(0, 12).map((skill) => (
+                <button className="skill-row" key={skill.name} onClick={() => addSkillToPrompt(skill)} title={`Add ${skill.name} to the next prompt`}>
+                  <span><strong>{skill.name}</strong><small>{skill.description}</small></span><ChevronRight size={14} />
+                </button>
+              ))}
+            </div>
+          </SidebarSection>
+          <SidebarSection icon={<Command size={15} />} title="MCP bridge" count={2}>
+            <p className="skills-note">The agent sees one bridge, then discovers only the MCP API it needs.</p>
+            <div className="bridge-tools"><span><code>search_capabilities</code><small>find a matching API</small></span><span><code>execute</code><small>run the selected tool</small></span></div>
           </SidebarSection>
           <SidebarSection icon={<Activity size={15} />} title="Prompt queue" count={snapshot.queue.length} action={
             <button className="tiny-button" onClick={() => void actions.pause(!snapshot.queuePaused)}>{snapshot.queuePaused ? <Play size={13} /> : <Pause size={13} />}</button>

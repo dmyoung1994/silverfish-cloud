@@ -5,24 +5,29 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
-    "build": "tsc && vite build",
+    "build": "npm run build:mcp-bridge && tsc && vite build",
+    "build:mcp-bridge": "node scripts/build-mcp-bridge.mjs",
+    "test:mcp-bridge": "npm run build:mcp-bridge && node --test mcp-bridge/test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "esbuild": "^0.28.1",
     "typescript": "~5.9.2",
     "vite": "^7.1.5"
   }

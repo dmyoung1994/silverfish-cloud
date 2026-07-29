@@ -99,22 +99,23 @@ mkdir -p apps/desktop/public/updates
 release_version=$(node -p 'require("./apps/desktop/package.json").version')
 release_tag="v${release_version}"
 release_notes="Guest-to-host conversion funnel and automatic in-app updates."
-if ! gh release view "$release_tag" --repo dmyoung1994/silverfish-cloud >/dev/null 2>&1; then
-  gh release create "$release_tag" --repo dmyoung1994/silverfish-cloud --title "Silverfish v${release_version}" --notes "$release_notes"
+public_repo=${SILVERFISH_PUBLIC_REPO:-dmyoung1994/silverfish}
+if ! gh release view "$release_tag" --repo "$public_repo" >/dev/null 2>&1; then
+  gh release create "$release_tag" --repo "$public_repo" --title "Silverfish v${release_version}" --notes "$release_notes"
 fi
 gh release upload "$release_tag" \
   "$dmg#Silverfish-macOS-arm64.dmg" \
   "$updater_bundle#Silverfish.app.tar.gz" \
   "$updater_bundle.sig#Silverfish.app.tar.gz.sig" \
-  --repo dmyoung1994/silverfish-cloud --clobber
+  --repo "$public_repo" --clobber
 node scripts/publish-updater-release.mjs \
   --version "$release_version" \
   --artifact "$updater_bundle" \
   --signature "$updater_bundle.sig" \
-  --artifact-url "${SILVERFISH_UPDATE_ARTIFACT_URL:-https://github.com/dmyoung1994/silverfish-cloud/releases/download/v${release_version}/Silverfish.app.tar.gz}" \
+  --artifact-url "https://github.com/${public_repo}/releases/download/${release_tag}/Silverfish.app.tar.gz" \
   --notes "$release_notes" \
   --output-dir apps/desktop/public/updates
-gh release upload "$release_tag" apps/desktop/public/updates/latest.json --repo dmyoung1994/silverfish-cloud --clobber
+gh release upload "$release_tag" apps/desktop/public/updates/latest.json --repo "$public_repo" --clobber
 shasum -a 256 "$dmg"
 npm run build
 wrangler_oauth d1 migrations apply silverfish-entitlements --remote --config "$repo_root/workers/relay-proxy/wrangler.jsonc"

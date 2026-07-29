@@ -2,7 +2,6 @@ import {
   ArrowDownToLine,
   ArrowRight,
   Check,
-  FileDiff,
   Github,
   Link2,
   LockKeyhole,
@@ -10,38 +9,30 @@ import {
   ShieldCheck,
   TerminalSquare,
   Users,
+  WandSparkles,
 } from "lucide-react";
+import agentConduit from "./assets/agent-conduit.png";
+import socialAgentCore from "./assets/social-agent-core.png";
 import { SilverfishMark } from "./SilverfishMark";
 import { PLANS } from "./plans";
 import "./landing.css";
 
 const downloadHref = "/downloads/Silverfish-macOS-arm64.dmg";
 const githubHref = "https://github.com/dmyoung1994/silverfish";
+const subscribeHref = import.meta.env.VITE_SILVERFISH_SUBSCRIBE_URL || "/host-your-own";
 
-const steps = [
-  {
-    number: "01",
-    title: "Start locally",
-    copy: "Choose a workspace. Silverfish starts a fresh Codex thread on your Mac.",
-  },
-  {
-    number: "02",
-    title: "Copy one link",
-    copy: "Invite collaborators without sharing your Codex login or workspace credentials.",
-  },
-  {
-    number: "03",
-    title: "Work together",
-    copy: "Queue prompts, steer active work, review commands and diffs, and answer approvals.",
-  },
+const waysOfWorking = [
+  ["01", "Run the agent you choose", "Keep the coding agent, model, and workflow your team already trusts."],
+  ["02", "Open one shared room", "Invite the people who need to shape the work—not just the person at the keyboard."],
+  ["03", "Pair in public", "Prompts, decisions, tool calls, and handoffs stay in one visible flow."],
 ] as const;
 
-const securityPoints = [
-  ["Credentials stay local", "Your Codex login never leaves the host Mac."],
-  ["End-to-end encrypted", "Room content is encrypted before it reaches the relay."],
-  ["Approval gated", "Sensitive commands still require an explicit human decision."],
-  ["Recovery before every turn", "The host can restore a local checkpoint when work goes sideways."],
-] as const;
+const roomBenefits = [
+  "See every prompt, tool call, and diff as it happens",
+  "Let collaborators steer the work without taking over",
+  "Keep approvals human and clearly attributed",
+  "See skills and MCP capability requests in the room",
+];
 
 function Brand() {
   return (
@@ -61,45 +52,44 @@ function DownloadLink({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function RoomPreview({ detailed = false }: { detailed?: boolean }) {
+function SessionCanvas() {
   return (
-    <div className={detailed ? "room-preview detailed" : "room-preview"} aria-label="Silverfish collaborative room preview">
-      <div className="preview-titlebar">
-        <div className="preview-brand"><span><SilverfishMark size={14} /></span> Silverfish <i>/</i> graphite</div>
-        <div className="preview-live"><b /> LIVE · 3 IN ROOM</div>
-        <div className="preview-invite">Invite <Link2 size={12} /></div>
+    <div className="session-canvas" aria-label="A shared collaborative coding session">
+      <div className="canvas-topbar">
+        <div><span className="canvas-status" /> shared session</div>
+        <div>4 collaborators <Link2 size={12} /></div>
       </div>
-      <div className="preview-body">
-        <div className="preview-timeline">
-          <div className="preview-message human">
-            <div><span className="preview-avatar">M</span><strong>Maya</strong><small>prompted</small></div>
-            <p>Make connecting create the room on a new thread automatically.</p>
+      <div className="canvas-main">
+        <aside className="canvas-rail">
+          <span className="canvas-rail-label">IN THE ROOM</span>
+          <div className="canvas-person"><i className="p-one">M</i><span>Maya<small>product</small></span></div>
+          <div className="canvas-person"><i className="p-two">D</i><span>Devon<small>engineering</small></span></div>
+          <div className="canvas-person"><i className="p-three">A</i><span>Ari<small>design</small></span></div>
+          <div className="canvas-person"><i className="p-agent"><SilverfishMark size={13} /></i><span>Build agent<small>working</small></span></div>
+          <div className="canvas-skills">
+            <span className="canvas-rail-label">MCP BRIDGE <b>2</b></span>
+            <div><i /> search_capabilities <small>discover</small></div>
+            <div><i /> execute <small>run tool</small></div>
+            <div><i /> Active skills <small>visible</small></div>
+            <button type="button">Discover APIs <ArrowRight size={11} /></button>
           </div>
-          <div className="preview-message agent">
-            <div><span className="preview-agent"><SilverfishMark size={14} /></span><strong>Codex</strong><small className="working">working</small></div>
-            <p>I’ll move room creation behind a successful connection and start a clean thread for the selected workspace.</p>
-          </div>
-          <div className="preview-tool">
-            <header><TerminalSquare size={13} /><strong>npm run typecheck</strong><small>complete</small></header>
-            <code>✓ Found 0 errors</code>
-          </div>
-          {detailed ? (
-            <div className="preview-tool diff">
-              <header><FileDiff size={13} /><strong>src/App.tsx</strong><small>3 changes</small></header>
-              <code>+ await codex.startThread(cwd)</code>
-            </div>
-          ) : null}
-          <div className="preview-composer"><MessageSquarePlus size={14} /><span>Ask Codex to build, inspect, or change something…</span><b>↵</b></div>
-        </div>
-        <aside className="preview-sidebar">
-          <header><Users size={12} /> IN THIS ROOM <span>3</span></header>
-          <div className="preview-person"><i>M</i><span>Maya <small>HOST</small></span><b /></div>
-          <div className="preview-person"><i>D</i><span>Devon</span><b /></div>
-          <div className="preview-person"><i>A</i><span>Ari</span><b /></div>
-          <header className="preview-queue">PROMPT QUEUE <span>1</span></header>
-          <div className="preview-queued"><em>1</em><p><strong>Devon</strong>Run the focused tests next.</p></div>
-          <div className="preview-protected"><ShieldCheck size={14} /><span><strong>Protected session</strong>Encrypted · approval gated</span></div>
         </aside>
+        <div className="canvas-thread">
+          <div className="canvas-event prompt-event">
+            <span className="event-person p-one">M</span>
+            <p><strong>Maya</strong> Tighten the onboarding flow and preserve the existing auth behavior.</p>
+          </div>
+          <div className="canvas-event agent-event">
+            <span className="event-agent"><WandSparkles size={15} /></span>
+            <p><strong>Build agent</strong> I’ll map the current path, update the UI, then run focused checks.</p>
+          </div>
+          <div className="canvas-command"><TerminalSquare size={15} /><span>search_capabilities "onboarding tests"</span><b>ready</b></div>
+          <div className="canvas-event steer-event">
+            <span className="event-person p-three">A</span>
+            <p><strong>Ari</strong> Keep the success state quiet—let the next action carry the weight.</p>
+          </div>
+          <div className="canvas-composer"><MessageSquarePlus size={15} /><span>Steer the work or add a prompt…</span><b>↵</b></div>
+        </div>
       </div>
     </div>
   );
@@ -107,129 +97,99 @@ function RoomPreview({ detailed = false }: { detailed?: boolean }) {
 
 export function LandingPage() {
   return (
-    <main className="landing-shell" id="top">
+    <main className="landing-shell refreshed-landing" id="top">
       <header className="landing-header">
         <Brand />
         <nav aria-label="Main navigation">
           <a href="#how-it-works">How it works</a>
           <a href="#plans">Plans</a>
           <a href="#security">Security</a>
-          <a
-            className="icon-nav-button"
-            href={githubHref}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="View source on GitHub"
-          >
-            <Github size={18} />
-          </a>
+          <a className="icon-nav-button" href={githubHref} target="_blank" rel="noreferrer" aria-label="View source on GitHub"><Github size={18} /></a>
           <DownloadLink compact />
         </nav>
       </header>
 
       <section className="landing-hero">
         <div className="hero-copy">
-          <h1>Build together.<br />One agent,<br /><span>everyone in the room.</span></h1>
-          <p>Silverfish turns a local Codex session into a shared workspace for prompts, steering, approvals, commands, and diffs—while your machine stays in control.</p>
-          <div className="hero-actions">
-            <DownloadLink />
-            <a className="text-link" href="#how-it-works">See how it works <ArrowRight size={17} /></a>
-          </div>
-          <div className="platform-note"><span>Apple silicon</span><i />macOS 13+</div>
+          <h1>Build together.<br /><span>Same agent.</span></h1>
+          <p>Turn one live agent session into a shared project space. Invite the people you want to create with—without asking everyone to share your model, skills, or workflow.</p>
+          <div className="hero-actions"><DownloadLink /><a className="text-link" href="#how-it-works">Explore the workflow <ArrowRight size={17} /></a></div>
+          <div className="platform-note"><span>Apple silicon</span><i /> macOS 13+ <i /> preview build</div>
         </div>
-        <RoomPreview />
+        <div className="hero-art">
+          <img src={socialAgentCore} alt="A single luminous core receiving signals from several collaborators" />
+          <div className="hero-art-caption"><span>ONE ACTIVE AGENT</span><b>A shared place for the work.</b></div>
+        </div>
+      </section>
+
+      <section className="agent-band" aria-label="Social agentic development">
+        <p>One running agent. One project space. Whoever you invite.</p>
+        <div><span>steer live work</span><i /> <span>add context</span><i /> <span>review diffs</span><i /> <span>make decisions</span></div>
       </section>
 
       <section className="process-section" id="how-it-works">
         <div className="section-heading">
-          <h2>One host. One room.<br />A shared flow.</h2>
-          <p>The real agent and workspace stay on the host. Everyone else joins from a browser.</p>
+          <h2>Pair on the<br />project. Not<br /><em>the setup.</em></h2>
+          <p>Silverfish centralizes the work around one agent session. The people you invite get the context, a voice, and a way to move the project forward—without needing to mirror the host’s skills, MCPs, or workflow.</p>
         </div>
         <div className="process-rail">
-          {steps.map((step) => (
-            <article key={step.number}>
-              <span>{step.number}</span>
-              <h3>{step.title}</h3>
-              <p>{step.copy}</p>
-            </article>
-          ))}
+          {waysOfWorking.map(([number, title, copy]) => <article key={number}><span>{number}</span><h3>{title}</h3><p>{copy}</p></article>)}
         </div>
       </section>
 
-      <section className="plans-section" id="plans">
-        <div className="section-heading">
-          <h2>Start free.<br />Upgrade when<br />you need more.</h2>
-          <p>Guests always join for free, straight from a link—no account, no login. Hosts can start free too, or unlock longer rooms with Founding Host.</p>
-        </div>
-        <div className="plans-grid">
-          {Object.values(PLANS).map((plan) => (
-            <article key={plan.id} className={plan.id === "founding_host" ? "plans-card highlighted" : "plans-card"}>
-              <h3>{plan.name}</h3>
-              <div className="plans-price">
-                <span>{plan.priceLabel}</span>
-                {plan.priceSuffix ? <small>{plan.priceSuffix}</small> : null}
-              </div>
-              <p>{plan.tagline}</p>
-              <ul>
-                {plan.features.map((feature) => (
-                  <li key={feature}><Check size={15} /> {feature}</li>
-                ))}
-              </ul>
-            </article>
-          ))}
+      <section className="conduit-section">
+        <div className="conduit-art"><img src={agentConduit} alt="Many colored paths flowing together through a transparent conduit" /></div>
+        <div className="conduit-copy">
+          <p className="section-label">ONE CAPABILITY BRIDGE</p>
+          <h2>Tools on<br /><em>demand.</em></h2>
+          <p>The agent gets two bridge calls—not every MCP schema. It discovers the API it needs, then executes it, keeping capability context compact while the room stays in the loop.</p>
+          <a className="text-link" href="#session">See a room in motion <ArrowRight size={17} /></a>
         </div>
       </section>
 
-      <section className="session-section">
+      <section className="session-section" id="session">
         <div className="session-copy">
-          <h2>The whole session,<br />in view.</h2>
-          <p>Everyone sees the same timeline. The host keeps the real agent, files, credentials, and recovery points local.</p>
-          <ul>
-            <li><Check size={15} /> Shared prompts and live steering</li>
-            <li><Check size={15} /> Streamed commands and readable diffs</li>
-            <li><Check size={15} /> One-time approvals with attribution</li>
-          </ul>
+          <p className="section-label">A ROOM, NOT A SCREEN SHARE</p>
+          <h2>Everyone can<br />see the work.<br /><em>Everyone can shape it.</em></h2>
+          <p>The session is a living record: what was asked, what the agent did, what changed, the human thinking that shaped it, and the capabilities the agent is drawing on.</p>
+          <ul>{roomBenefits.map((benefit) => <li key={benefit}><Check size={15} /> {benefit}</li>)}</ul>
         </div>
-        <RoomPreview detailed />
+        <SessionCanvas />
       </section>
 
       <section className="security-section" id="security">
         <div className="section-heading security-heading">
-          <h2>Private by<br />architecture.</h2>
-          <p>The relay coordinates the room, but it cannot read names, prompts, tool output, diffs, or approvals.</p>
+          <h2>Collaborate<br />freely. Keep<br /><em>control local.</em></h2>
+          <p>Your host stays the source of truth. Credentials, files, and authority stay where they belong while the room carries the shared context.</p>
         </div>
         <div className="architecture" aria-label="Host to encrypted relay to browser collaborators">
-          <div><span><SilverfishMark size={24} /></span><strong>Host Mac</strong><small>Agent · files · credentials</small></div>
+          <div><span><SilverfishMark size={24} /></span><strong>Host machine</strong><small>Agent · files · credentials</small></div>
           <i><LockKeyhole size={16} /><b /></i>
-          <div className="relay-node"><span><ShieldCheck size={23} /></span><strong>Encrypted relay</strong><small>Routes ciphertext only</small></div>
+          <div className="relay-node"><span><ShieldCheck size={23} /></span><strong>Encrypted room</strong><small>Context in motion</small></div>
           <i><LockKeyhole size={16} /><b /></i>
-          <div><span><Users size={24} /></span><strong>Collaborators</strong><small>Join from a browser</small></div>
+          <div><span><Users size={24} /></span><strong>Collaborators</strong><small>See · steer · approve</small></div>
         </div>
         <div className="security-list">
-          {securityPoints.map(([title, copy]) => (
-            <article key={title}><ShieldCheck size={18} /><div><h3>{title}</h3><p>{copy}</p></div></article>
-          ))}
+          <article><ShieldCheck size={18} /><div><h3>Credentials stay local</h3><p>Your machine remains the place where agent access lives.</p></div></article>
+          <article><ShieldCheck size={18} /><div><h3>Encrypted in transit</h3><p>Room content is protected before it reaches the relay.</p></div></article>
+          <article><ShieldCheck size={18} /><div><h3>Humans keep authority</h3><p>Important actions still wait for a clear, attributable approval.</p></div></article>
+          <article><ShieldCheck size={18} /><div><h3>Recovery is built in</h3><p>The host can return to a local checkpoint when work goes sideways.</p></div></article>
+        </div>
+      </section>
+
+      <section className="plans-section" id="plans">
+        <div className="section-heading"><h2>Start with a<br />room. Scale<br /><em>when it sticks.</em></h2><p>Guests join from a link—no account, no login. Hosts can start free, then unlock more time for longer-running work.</p></div>
+        <div className="plans-grid">
+          {Object.values(PLANS).map((plan) => <article key={plan.id} className={plan.id === "founding_host" ? "plans-card highlighted" : "plans-card"}><h3>{plan.name}</h3><div className="plans-price"><span>{plan.priceLabel}</span>{plan.priceSuffix ? <small>{plan.priceSuffix}</small> : null}</div><p>{plan.tagline}</p><ul>{plan.features.map((feature) => <li key={feature}><Check size={15} /> {feature}</li>)}</ul><a className="plan-action" href={plan.id === "founding_host" ? subscribeHref : downloadHref} download={plan.id === "free"}>{plan.id === "founding_host" ? "Become a Founding Host" : "Download free"}<ArrowRight size={15} /></a></article>)}
         </div>
       </section>
 
       <section className="landing-cta">
-        <div>
-          <h2>Bring your people<br />into the room.</h2>
-          <p>Download Silverfish for an Apple silicon Mac and start a shared Codex session in minutes.</p>
-        </div>
+        <div><p className="section-label">ONE SESSION. MORE POSSIBILITY.</p><h2>Open up the<br />project.</h2><p>Download Silverfish and give the people you want to build with a shared place to move the work forward.</p></div>
         <div className="cta-download"><DownloadLink /><span>Apple silicon · macOS 13+ · preview build</span></div>
       </section>
 
-      <footer className="landing-footer">
-        <Brand />
-        <p>A small creature for shared work around one powerful agent.</p>
-        <div>
-          <a href="#plans">Plans</a>
-          <a href="#security">Security</a>
-          <a href={githubHref} target="_blank" rel="noreferrer">GitHub</a>
-          <a href="#top">Back to top</a>
-        </div>
-      </footer>
+      <footer className="landing-footer"><Brand /><p>One agent session, opened up for shared creation.</p><div><a href="#plans">Plans</a><a href="#security">Security</a><a href={githubHref} target="_blank" rel="noreferrer">GitHub</a><a href="#top">Back to top</a></div></footer>
     </main>
   );
 }

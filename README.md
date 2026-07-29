@@ -1,12 +1,12 @@
 # Silverfish
 
-Silverfish is a multiplayer client for a host-owned Codex session. The host runs the real agent and workspace locally; invited collaborators join in a browser and share prompts, steering, interruption, streamed commands and diffs, and one-time approvals.
+Silverfish is a multiplayer client for a host-owned local coding-agent session. The host runs the real agent and workspace locally; invited collaborators join in a browser and share prompts, steering, interruption, streamed commands and diffs, and one-time approvals.
 
 Silverfish is MIT-licensed and designed to be self-hosted. The paid product is the convenience of the managed relay, maintained desktop builds, and support—not an artificial restriction in the source.
 
 This repository contains a working macOS-first foundation:
 
-- a Tauri 2 host application using `codex app-server` over local stdio;
+- a Tauri 2 host application for Codex or Claude Code over local stdio;
 - a shared React room UI for the host and browser guests;
 - a self-hosted Rust WebSocket relay with per-invite capability tokens;
 - browser/Rust AES-256-GCM room envelopes whose key never reaches the relay;
@@ -17,12 +17,47 @@ This repository contains a working macOS-first foundation:
 ## Prerequisites
 
 - macOS with Rust 1.96+, Node 22+, and npm
-- an authenticated `codex` CLI 0.144.1 or newer
+- an authenticated `codex` CLI 0.144.1 or newer, or Claude Code
 - optionally, [`dcg`](https://github.com/Dicklesworthstone/destructive_command_guard) for an additional destructive-command guard
 
-The desktop refuses to connect when Codex is missing or incompatible. `dcg` is optional defense in depth and can be installed from its dependency row in the app. Codex remains pinned to `workspace-write` with granular interactive approvals and permission escalation disabled.
+The desktop verifies the selected harness before connecting. `dcg` is optional defense in depth for Codex and can be installed from its dependency row in the app. Codex remains pinned to `workspace-write` with granular interactive approvals and permission escalation disabled.
 
 Finder-launched macOS apps do not inherit your terminal's `PATH`. Silverfish therefore checks common Homebrew, local npm, Volta, asdf, mise, nvm, and fnm install locations in addition to `PATH`. Set `SILVERFISH_CODEX_PATH` to the absolute path of the CLI if Codex is installed elsewhere.
+
+## Skills and the MCP capability bridge
+
+Silverfish keeps the host's agent setup useful without making every collaborator reproduce it.
+
+- The room shows the host agent's installed skills and lets a host install a GitHub skill with Codex's own installer. Codex skills are installed in the existing Codex skills directory; Claude Code skills are installed in the workspace's `.claude/skills`. The app does not replace Codex's `/skills` command—it reads the same on-disk skill manifests so the room can see what the active harness can use.
+- Codex runs in a small Silverfish runtime home that links the host's existing authentication and skills, but does not load the host's direct MCP configuration. Any direct MCP entries in the selected workspace's `.codex/config.toml` are disabled for the room. Claude Code receives `--strict-mcp-config` for the same reason.
+- Both harnesses receive exactly one MCP server: `silverfish-capability-bridge`. It exposes only `search_capabilities` and `execute`. The bridge starts upstream stdio MCPs only when the agent searches for them, returns only matching schemas, and forwards an execution only after that tool has been discovered.
+
+This is code-mode capability discovery: the agent searches for an API, receives the compact input schema for the relevant operation, then calls it through the bridge. It reduces MCP tool-schema context; it does **not** shrink the result returned by the upstream tool.
+
+Configure the bridge's upstream MCPs with a JSON file. Silverfish uses the first available path in this order:
+
+1. `SILVERFISH_MCP_BRIDGE_CONFIG`
+2. `<workspace>/.silverfish/mcp-servers.json`
+3. `$CODEX_HOME/local-mcp-broker/servers.json` (compatible with an existing local broker setup)
+4. Silverfish's bundled empty configuration
+
+For example:
+
+```json
+{
+  "servers": {
+    "project-tools": {
+      "command": "node",
+      "args": ["./mcp/server.mjs"],
+      "cwd": "/absolute/path/to/project",
+      "env": { "EXAMPLE_FLAG": "true" },
+      "startupTimeoutMs": 30000
+    }
+  }
+}
+```
+
+An upstream entry may instead use `pluginRoot`; the bridge selects its newest version directory before starting the command. Upstream credentials and authorization stay with the upstream MCP. The bridge is a schema and routing boundary, not an authorization bypass.
 
 ## Develop locally
 
@@ -135,6 +170,7 @@ The Worker is a narrow availability bridge, not a trust boundary: end-to-end roo
 - The invite URL fragment carries the room key and is not included in the HTTP request to the relay.
 - The relay sees room IDs, connection metadata, and ciphertext sizes/timing. It cannot see names, prompts, tool output, diffs, or approvals.
 - Only the host process talks to app-server. Guest intents map to a fixed command set; raw JSON-RPC is never forwarded.
+- The agent receives only Silverfish's two-tool MCP bridge. Upstream MCP schemas are fetched only after a capability search, and the room records bridge activity as a tool event.
 - `thread/shellCommand`, `fs/*`, account/login, config, plugin/marketplace, persistent command-rule approvals, permission profiles, and unsupported server requests are not exposed.
 - Command and file-change approvals accept only once. First valid response wins.
 - Before a queued turn starts, Silverfish snapshots workspace files into a content-addressed local store. `.git`, `node_modules`, `target`, `dist`, `.build`, and `.cache` are excluded. A snapshot over 1 GiB pauses the queue.
@@ -150,6 +186,7 @@ npm run typecheck
 npm run build
 npm run smoke:codex
 npm run smoke:relay
+npm run test:mcp-bridge --workspace @silverfish/desktop
 ```
 
 The current app-server adapter is pinned and contract-checked against Codex 0.144.1. When Codex changes its protocol, update the minimum version only after regenerating and reviewing `codex app-server generate-ts` output.
